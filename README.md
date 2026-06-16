@@ -1,6 +1,6 @@
 # 🛡️ IOC Investigation Tool
 
-> Built during my cybersecurity internship — a threat intelligence tool that hunts down malicious IPs, domains, and file hashes so analysts don't have to do it manually.
+> A threat intelligence tool that hunts down malicious IPs, domains, and file hashes so analysts don't have to do it manually.
 
 ---
 

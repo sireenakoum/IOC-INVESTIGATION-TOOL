@@ -83,8 +83,8 @@ def combined_verdict(vt, otx):
         else:
             breakdown.append(f"Bad tags none          → +0")
 
-        # Recency
-        if vt.get("last_scan_date"):
+        # Recency — only counts if malicious detections exist
+        if vt.get("last_scan_date") and malicious > 0:
 
             now       = datetime.datetime.now()
             scan_date = datetime.datetime.fromtimestamp(vt["last_scan_date"])
@@ -92,7 +92,7 @@ def combined_verdict(vt, otx):
 
             if days_ago <= 7:
                 score += 2
-                breakdown.append(f"Last scanned {days_ago} days ago      → +2  (very recent)")
+                breakdown.append(f"Last scanned {days_ago} days ago      → +2  (recent malicious activity)")
             elif days_ago <= 30:
                 score += 1
                 breakdown.append(f"Last scanned {days_ago} days ago      → +1  (recent)")
@@ -101,6 +101,9 @@ def combined_verdict(vt, otx):
                 breakdown.append(f"Last scanned {days_ago} days ago      → -1  (old)")
             else:
                 breakdown.append(f"Last scanned {days_ago} days ago      → +0")
+        else:
+            if vt.get("last_scan_date"):
+                breakdown.append(f"Recency skipped — no malicious detections → +0")
 
     # OTX signals
 

@@ -1,6 +1,6 @@
 # 🛡️ IOC Investigation Tool
 
-> Built during my cybersecurity internship — a threat intelligence tool that hunts down malicious IPs, domains, and file hashes so analysts don't have to do it manually.
+>A threat intelligence tool that hunts down malicious IPs, domains, and file hashes so analysts don't have to do it manually.
 
 ---
 
@@ -8,18 +8,18 @@
 
 Give it an IP, domain, or file hash — it tells you if it's dangerous.
 
-- Checks **VirusTotal** + **AlienVault OTX** simultaneously
+- Checks **VirusTotal** + **AlienVault OTX**
+- Requests a fresh VirusTotal re-scan before pulling the report, instead of relying purely on a stale cached result
 - Gives a **verdict** (Clean / Suspicious / Medium / High risk)
 - Shows **why** — full score breakdown per signal
-- Caches results so repeat lookups are instant
-- Exports reports to **JSON**, **CSV**, and **PDF**
+- Saves every lookup to `results.json`
 
 ---
 
 ## 🚀 Quick start
 
 ```bash
-pip install requests python-dotenv fpdf2 aiohttp tqdm
+pip install requests python-dotenv
 ```
 
 Add a `.env` file:
@@ -28,7 +28,7 @@ OTX_API_KEY=your_key
 
 Run it:
 ```bash
-python main2.py
+python main.py
 ```
 
 ---
@@ -47,7 +47,27 @@ python main2.py
 
 ## 🛠️ Built with
 
-`Python` · `VirusTotal API` · `AlienVault OTX` · `SQLite` · `aiohttp` · `fpdf2`
+`Python` · `VirusTotal API` · `AlienVault OTX`
+
+---
+
+## 📁 Project structure
+
+| File | Responsibility |
+|------|------|
+| `main.py` | Input loop, ties everything together |
+| `detect.py` | Detects whether input is an IP, domain, or hash |
+| `vt.py` | VirusTotal lookups + rescan requests |
+| `otx.py` | AlienVault OTX lookups |
+| `scoring.py` | Combines VT/OTX signals into a verdict |
+| `output.py` | Saves results to `results.json` |
+
+---
+
+## 🧭 Roadmap
+
+- Local caching (`cache.py`) so repeat lookups skip the API
+- CSV / PDF report export
 
 ---
 

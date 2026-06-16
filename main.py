@@ -3,6 +3,7 @@ import datetime
 from detect import detect_type
 from vt import vt_check
 from otx import otx_check
+from abuseipdb import abuseipdb_check
 from scoring import combined_verdict
 from output import save_results
 from output import print_history
@@ -21,8 +22,9 @@ def check_indicator(indicator):
     print(f"  Threat Report: {indicator}")
     print(f"{'='*45}")
 
-    vt  = vt_check(indicator, ind_type)
-    otx = otx_check(indicator, ind_type)
+    vt    = vt_check(indicator, ind_type)
+    otx   = otx_check(indicator, ind_type)
+    abuse = abuseipdb_check(indicator, ind_type)
 
     # Print VT results
     if vt:
@@ -89,8 +91,33 @@ def check_indicator(indicator):
                 last  = r["last"][:10]  if r["last"]  else "?"
                 print(f"    [{r['record_type']:<5}] {r['hostname'] or r['address']:<40}  first: {first}  last: {last}")
 
+    # Print AbuseIPDB results
+    if abuse:
+        print(f"\n  [AbuseIPDB]")
+        print(f"  Abuse Score    : {abuse['abuse_score']}%")
+        print(f"  Total Reports  : {abuse['total_reports']}  ({abuse['distinct_users']} distinct users)")
+        print(f"  ISP            : {abuse['isp']}")
+        print(f"  Tor Exit Node  : {'Yes' if abuse['is_tor'] else 'No'}")
+        if abuse['last_reported']:
+            print(f"  Last Reported  : {abuse['last_reported'][:10]}")
+
+        if abuse['top_categories']:
+            print(f"\n  Top Attack Types:")
+            for name, count in abuse['top_categories'][:5]:
+                print(f"    {name:<25} {count} report(s)")
+
+        if abuse['reports']:
+            print(f"\n  Recent Reports:")
+            for r in abuse['reports']:
+                date    = r['reported_at'][:10] if r['reported_at'] else '?'
+                cats    = ', '.join(r['categories']) if r['categories'] else 'None'
+                comment = r['comment'][:80] if r['comment'] else ''
+                print(f"    [{date}] {cats}")
+                if comment:
+                    print(f"             {comment}")
+
     # Print score breakdown and verdict
-    verdict_result = combined_verdict(vt, otx)
+    verdict_result = combined_verdict(vt, otx, abuse)
 
     print(f"\n  Score Breakdown:")
     for line in verdict_result["breakdown"]:

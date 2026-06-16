@@ -2,7 +2,7 @@ import datetime
 
 # Combined verdict
 
-def combined_verdict(vt, otx):
+def combined_verdict(vt, otx, abuse=None):
 
     score     = 0
     breakdown = []
@@ -168,6 +168,41 @@ def combined_verdict(vt, otx):
                 breakdown.append(f"Passive DNS last seen {days_since} days ago  → +0")
         else:
             breakdown.append(f"Passive DNS last seen unknown   → +0")
+
+    # AbuseIPDB signals
+
+    if abuse:
+
+        abuse_score    = abuse.get("abuse_score", 0)
+        distinct_users = abuse.get("distinct_users", 0)
+        is_tor         = abuse.get("is_tor", False)
+
+        if abuse_score >= 80:
+            score += 3
+            breakdown.append(f"AbuseIPDB score  {abuse_score:<5}    → +3  (high confidence)")
+        elif abuse_score >= 40:
+            score += 2
+            breakdown.append(f"AbuseIPDB score  {abuse_score:<5}    → +2  (moderate)")
+        elif abuse_score >= 10:
+            score += 1
+            breakdown.append(f"AbuseIPDB score  {abuse_score:<5}    → +1  (low risk)")
+        else:
+            breakdown.append(f"AbuseIPDB score  {abuse_score:<5}    → +0")
+
+        if distinct_users >= 50:
+            score += 2
+            breakdown.append(f"Distinct reporters {distinct_users:<3}      → +2  (widely reported)")
+        elif distinct_users >= 10:
+            score += 1
+            breakdown.append(f"Distinct reporters {distinct_users:<3}      → +1")
+        else:
+            breakdown.append(f"Distinct reporters {distinct_users:<3}      → +0")
+
+        if is_tor:
+            score += 1
+            breakdown.append(f"Tor exit node                   → +1")
+        else:
+            breakdown.append(f"Tor exit node                   → +0")
 
     # Final verdict
 

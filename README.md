@@ -6,7 +6,7 @@
 
 Give it an IP, domain, or file hash — it tells you if it's dangerous.
 
-- Checks **VirusTotal** + **AlienVault OTX**
+- Checks **VirusTotal** + **AlienVault OTX** + **AbuseIPDB**
 - Requests a fresh VirusTotal re-scan before pulling the report, instead of relying purely on a stale cached result
 - Gives a **verdict** (Clean / Suspicious / Medium / High risk)
 - Shows **why** — full score breakdown per signal
@@ -24,6 +24,7 @@ pip install requests python-dotenv
 Add a `.env` file:
 VT_API_KEY=your_key
 OTX_API_KEY=your_key
+ABUSEIPDB_API_KEY=your_key
 
 Run it:
 ```bash
@@ -42,11 +43,19 @@ python main.py
 | 5–7 | 🟠 Medium risk |
 | 8+ | 🔴 High risk |
 
+Signals are drawn from all three sources and combined into a single score:
+
+**VirusTotal** — malicious/suspicious vendor counts, trusted vendor hits, bad tags, scan recency
+
+**AlienVault OTX** — pulse count, reputation, recent pulses (2025/2026), passive DNS recency
+
+**AbuseIPDB** (IPs only) — abuse confidence score, number of distinct reporters, Tor exit node status
+
 ---
 
 ## 🛠️ Built with
 
-`Python` · `VirusTotal API` · `AlienVault OTX`
+`Python` · `VirusTotal API` · `AlienVault OTX` · `AbuseIPDB API`
 
 ---
 
@@ -58,7 +67,8 @@ python main.py
 | `detect.py` | Detects whether input is an IP, domain, or hash |
 | `vt.py` | VirusTotal lookups + rescan requests |
 | `otx.py` | AlienVault OTX lookups |
-| `scoring.py` | Combines VT/OTX signals into a verdict |
+| `abuseipdb.py` | AbuseIPDB lookups — abuse score, report history, attack categories |
+| `scoring.py` | Combines VT/OTX/AbuseIPDB signals into a verdict |
 | `output.py` | Saves each check's results to the `history` table in `ioc_cache.db` |
 | `cache.py` | SQLite-backed cache (`ioc_cache.db`) for VT/OTX lookups |
 

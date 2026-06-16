@@ -5,6 +5,19 @@ import os
 
 DB_PATH = "ioc_cache.db"
 
+def cache_history():
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT ioc, source, result, cached_at
+        FROM cache
+        ORDER BY cached_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

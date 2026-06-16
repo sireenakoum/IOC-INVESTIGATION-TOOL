@@ -5,6 +5,7 @@ from vt import vt_check
 from otx import otx_check
 from scoring import combined_verdict
 from output import save_results
+from output import print_history
 
 # Unified check
 
@@ -104,7 +105,10 @@ def check_indicator(indicator):
 # Main loop
 
 while True:
-    indicator = input("Enter IP, domain, or file hash (or 'exit' to quit): ").strip()
+    indicator = input("Enter IP, domain, or file hash (or 'exit' to quit, 'history' to view past lookups): ").strip()
     if indicator.lower() == "exit":
         break
+    if indicator.lower() == "history":
+        print_history()
+        continue
     check_indicator(indicator)

@@ -1,0 +1,241 @@
+[
+    {
+        "indicator": "199.217.98.153",
+        "vt_result": {
+            "malicious": 13,
+            "suspicious": 1,
+            "harmless": 46,
+            "undetected": 31,
+            "malicious_vendors": [
+                {
+                    "vendor": "ADMINUSLabs",
+                    "name": "malicious"
+                },
+                {
+                    "vendor": "Criminal IP",
+                    "name": "malicious"
+                },
+                {
+                    "vendor": "ArcSight Threat Intelligence",
+                    "name": "malware"
+                },
+                {
+                    "vendor": "BitDefender",
+                    "name": "phishing"
+                },
+                {
+                    "vendor": "Chong Lua Dao",
+                    "name": "malicious"
+                }
+            ],
+            "tags": [],
+            "last_scan_date": 1781081230,
+            "dns_records": [],
+            "country": "US",
+            "asn": 399629
+        },
+        "otx_result": {
+            "pulse_count": 2,
+            "pulse_details": [
+                {
+                    "name": "DEFENDER's TI (Compiled)",
+                    "adversary": "",
+                    "families": [],
+                    "tags": [],
+                    "ref": ""
+                },
+                {
+                    "name": "Amazon threat intelligence teams identify Interlock ransomware campaign targeting enterprise firewalls",
+                    "adversary": "",
+                    "families": [
+                        "Interlock"
+                    ],
+                    "tags": [
+                        "ransomeware",
+                        "threat intelligence",
+                        "interlock",
+                        "amazon threat",
+                        "cisco",
+                        "cisco secure",
+                        "cve202620131",
+                        "center",
+                        "java code",
+                        "january",
+                        "http",
+                        "http put",
+                        "powershell",
+                        "desktop",
+                        "rats",
+                        "win64"
+                    ],
+                    "ref": "https://aws.amazon.com/ru/blogs/security/amazon-threat-intelligence-teams-identify-interlock-ransomware-campaign-targeting-enterprise-firewalls/"
+                }
+            ],
+            "passive_dns": [],
+            "country": "United States of America",
+            "asn": "AS54455 madeit inc.",
+            "reputation": 0
+        },
+        "verdict": "\ud83d\udd34 High risk"
+    },
+    {
+        "timestamp": "2026-06-15 12:46:52",
+        "indicator": "199.217.98.153",
+        "vt_result": {
+            "malicious": 13,
+            "suspicious": 1,
+            "harmless": 46,
+            "undetected": 31,
+            "malicious_vendors": [
+                {
+                    "vendor": "ADMINUSLabs",
+                    "name": "malicious"
+                },
+                {
+                    "vendor": "Criminal IP",
+                    "name": "malicious"
+                },
+                {
+                    "vendor": "ArcSight Threat Intelligence",
+                    "name": "malware"
+                },
+                {
+                    "vendor": "BitDefender",
+                    "name": "phishing"
+                },
+                {
+                    "vendor": "Chong Lua Dao",
+                    "name": "malicious"
+                }
+            ],
+            "tags": [],
+            "last_scan_date": 1781081230,
+            "dns_records": [],
+            "country": "US",
+            "asn": 399629
+        },
+        "otx_result": {
+            "pulse_count": 2,
+            "pulse_details": [
+                {
+                    "name": "DEFENDER's TI (Compiled)",
+                    "adversary": "",
+                    "families": [],
+                    "tags": [],
+                    "ref": ""
+                },
+                {
+                    "name": "Amazon threat intelligence teams identify Interlock ransomware campaign targeting enterprise firewalls",
+                    "adversary": "",
+                    "families": [
+                        "Interlock"
+                    ],
+                    "tags": [
+                        "ransomeware",
+                        "threat intelligence",
+                        "interlock",
+                        "amazon threat",
+                        "cisco",
+                        "cisco secure",
+                        "cve202620131",
+                        "center",
+                        "java code",
+                        "january",
+                        "http",
+                        "http put",
+                        "powershell",
+                        "desktop",
+                        "rats",
+                        "win64"
+                    ],
+                    "ref": "https://aws.amazon.com/ru/blogs/security/amazon-threat-intelligence-teams-identify-interlock-ransomware-campaign-targeting-enterprise-firewalls/"
+                }
+            ],
+            "passive_dns": [],
+            "country": "United States of America",
+            "asn": "AS54455 madeit inc.",
+            "reputation": 0
+        },
+        "verdict": "\ud83d\udd34 High risk"
+    },
+    {
+        "timestamp": "2026-06-15 13:45:17",
+        "indicator": "199.217.98.153",
+        "vt_result": {
+            "malicious": 13,
+            "suspicious": 1,
+            "harmless": 46,
+            "undetected": 31,
+            "malicious_vendors": [
+                {
+                    "vendor": "ADMINUSLabs",
+                    "name": "malicious"
+                },
+                {
+                    "vendor": "Criminal IP",
+                    "name": "malicious"
+                },
+                {
+                    "vendor": "ArcSight Threat Intelligence",
+                    "name": "malware"
+                },
+                {
+                    "vendor": "BitDefender",
+                    "name": "phishing"
+                },
+                {
+                    "vendor": "Chong Lua Dao",
+                    "name": "malicious"
+                }
+            ],
+            "tags": [],
+            "last_scan_date": 1781081230,
+            "dns_records": [],
+            "country": "US",
+            "asn": 399629
+        },
+        "otx_result": {
+            "pulse_count": 2,
+            "pulse_details": [
+                {
+                    "name": "DEFENDER's TI (Compiled)",
+                    "adversary": "",
+                    "families": [],
+                    "tags": [],
+                    "ref": ""
+                },
+                {
+                    "name": "Amazon threat intelligence teams identify Interlock ransomware campaign targeting enterprise firewalls",
+                    "adversary": "",
+                    "families": [
+                        "Interlock"
+                    ],
+                    "tags": [
+                        "ransomeware",
+                        "threat intelligence",
+                        "interlock",
+                        "amazon threat",
+                        "cisco",
+                        "cisco secure",
+                        "cve202620131",
+                        "center",
+                        "java code",
+                        "january",
+                        "http",
+                        "http put",
+                        "powershell",
+                        "desktop",
+                        "rats",
+                        "win64"
+                    ],
+                    "ref": "https://aws.amazon.com/ru/blogs/security/amazon-threat-intelligence-teams-identify-interlock-ransomware-campaign-targeting-enterprise-firewalls/"
+                }
+            ],
+            "passive_dns": [],
+            "country": "United States of America",
+            "asn": "AS54455 madeit inc.",
+            "reputation": 0
+        },
+        "verdict": "\ud83d\udd34 High risk"
+    }
+]

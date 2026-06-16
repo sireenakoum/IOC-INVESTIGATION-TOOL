@@ -10,7 +10,8 @@ Give it an IP, domain, or file hash — it tells you if it's dangerous.
 - Requests a fresh VirusTotal re-scan before pulling the report, instead of relying purely on a stale cached result
 - Gives a **verdict** (Clean / Suspicious / Medium / High risk)
 - Shows **why** — full score breakdown per signal
-- Saves every lookup to `results.json`
+- Saves every lookup to a local SQLite database (`ioc_cache.db`) so history can be queried later
+- Caches VT/OTX results for 7 days to avoid repeat API calls
 
 ---
 
@@ -58,13 +59,13 @@ python main.py
 | `vt.py` | VirusTotal lookups + rescan requests |
 | `otx.py` | AlienVault OTX lookups |
 | `scoring.py` | Combines VT/OTX signals into a verdict |
-| `output.py` | Saves results to `results.json` |
+| `output.py` | Saves each check's results to the `history` table in `ioc_cache.db` |
+| `cache.py` | SQLite-backed cache (`ioc_cache.db`) for VT/OTX lookups |
 
 ---
 
 ## 🧭 Roadmap
 
-- Local caching (`cache.py`) so repeat lookups skip the API
 - CSV / PDF report export
 
 ---

@@ -1,5 +1,6 @@
 import os
 import requests
+from cache import cache_get, cache_set
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,6 +13,10 @@ headers_OTX  = {"X-OTX-API-KEY": OTX_API_KEY}
 
 def otx_check(indicator, ind_type):
 
+    cached = cache_get(indicator, "otx")
+    if cached:
+        return cached
+        
     if ind_type == "ip":
         url = f"{BASE_URL_OTX}/indicators/IPv4/{indicator}/general"
     elif ind_type == "hash":
@@ -100,5 +105,5 @@ def otx_check(indicator, ind_type):
         result["country"]    = data.get("country_name", "Unknown")
         result["asn"]        = data.get("asn", "Unknown")
         result["reputation"] = data.get("reputation", 0)
-
+        cache_set(indicator, "otx", result)
     return result

@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+from cache import cache_get, cache_set
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -58,6 +59,10 @@ def vt_wait_for_analysis(analysis_id, timeout=60, poll_interval=15):
 
 
 def vt_check(indicator, ind_type):
+
+    cached = cache_get(indicator, "virustotal")
+    if cached:
+        return cached
 
     analysis_id = vt_request_rescan(indicator, ind_type)
     if analysis_id:
@@ -130,5 +135,7 @@ def vt_check(indicator, ind_type):
     if ind_type == "ip":
         result["country"] = attrs.get("country", "Unknown")
         result["asn"]     = attrs.get("asn", "Unknown")
+
+    cache_set(indicator, "virustotal", result)
 
     return result

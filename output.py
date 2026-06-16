@@ -1,25 +1,41 @@
-import os
+import sqlite3
 import json
 import datetime
 
-def save_results(indicator, vt_result, otx_result, verdict):
-    entry = {
-    "timestamp":   datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    "indicator":   indicator,
-    "vt_result":   vt_result,
-    "otx_result":  otx_result,
-    "verdict":     verdict
-    }
-    if os.path.exists("results.json"):
-        with open("results.json", "r") as f:
-            try:
-                result_data = json.load(f)
-            except json.JSONDecodeError:
-                result_data = []
-    else:
-        result_data = []
-    result_data.append(entry)
-    with open("results.json", "w") as f:
-        json.dump(result_data, f, indent=4)
+from cache import DB_PATH
 
-    print(f"  Result saved to results.json ({len(result_data)} total)")
+def init_history_table():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT NOT NULL,
+            indicator   TEXT NOT NULL,
+            vt_result   TEXT,
+            otx_result  TEXT,
+            verdict     TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_results(indicator, vt_result, otx_result, verdict):
+    init_history_table()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO history (timestamp, indicator, vt_result, otx_result, verdict)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        indicator,
+        json.dumps(vt_result),
+        json.dumps(otx_result),
+        verdict
+    ))
+    conn.commit()
+
+    total = cursor.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+    conn.close()
+
+    print(f"  Result saved to database ({total} total)")

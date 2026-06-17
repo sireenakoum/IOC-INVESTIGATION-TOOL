@@ -1,0 +1,163 @@
+{
+  "_meta": {
+    "source": "AV-Comparatives Consumer & Business Main-Test Series 2023-2025",
+    "last_updated": "2026-06",
+    "notes": [
+      "Tier 1: Consistent Top-Rated or Product of the Year winners across 2023-2025.",
+      "Tier 2: Approved/certified products with strong but less consistent results.",
+      "Tier 3: All other VT vendors — low-weight, noisy, or untested by independent labs.",
+      "VT engine names may differ slightly from vendor marketing names (e.g. 'ESET-NOD32' vs 'ESET')."
+    ],
+    "scoring": {
+      "tier1_points": 2,
+      "tier1_cap": 6,
+      "tier2_points": 1,
+      "tier2_cap": 3,
+      "tier3_points": 0.5,
+      "tier3_cap": 2
+    }
+  },
+
+  "tier1": {
+    "description": "Top-Rated / Product of the Year winners — highest detection rates, lowest false positives, consistent across 3 years of independent testing.",
+    "vendors": [
+      "Bitdefender",
+      "ESET",
+      "Kaspersky",
+      "Avast",
+      "AVG",
+      "G Data",
+      "Norton",
+      "CrowdStrike"
+    ],
+    "evidence": {
+      "Bitdefender": "Outstanding Product 2023, Top-Rated 2024 & 2025, lowest avg compromised systems (0.5) across 3 years of business tests",
+      "ESET": "Product of the Year 2024, Advanced+ in all 7 tests in 2025, Top-Rated 2023 & 2025",
+      "Kaspersky": "Top-Rated 2024 & 2025, lowest false positive count (5) in 2024, Advanced+ in malware protection 2025",
+      "Avast": "Top-Rated 2024 & 2025, Advanced+ in 6/7 tests in 2025, Gold award for overall performance",
+      "AVG": "Top-Rated 2024 & 2025, Advanced+ in 6/7 tests in 2025, Gold award for overall performance",
+      "G Data": "Top-Rated 2024 & 2025, consistently Advanced+ in malware protection",
+      "Norton": "Top-Rated 2025, Advanced+ in malware protection 2025 & 2026",
+      "CrowdStrike": "Certified in AV-Comparatives Enterprise Business Security Test 2024, industry-standard EDR/XDR"
+    }
+  },
+
+  "tier2": {
+    "description": "Approved/certified products — solid detection rates, passed independent testing, but not consistent Top-Rated winners.",
+    "vendors": [
+      "Microsoft",
+      "Sophos",
+      "Trend Micro",
+      "McAfee",
+      "Malwarebytes",
+      "F-Secure",
+      "Elastic",
+      "Palo Alto Networks",
+      "Symantec",
+      "VIPRE",
+      "Total Defense",
+      "Fortect",
+      "K7",
+      "Emsisoft"
+    ],
+    "evidence": {
+      "Microsoft": "Advanced+ in March 2026 malware protection test, approved enterprise product, widely deployed",
+      "Sophos": "Approved enterprise product, long-standing independent test participant",
+      "Trend Micro": "Certified in enterprise tests 2024, though lower stalkerware detection (59%) in EFF/AVC 2025 test",
+      "McAfee": "Approved product, Top-Rated alternative nominee 2025",
+      "Malwarebytes": "100% stalkerware detection in EFF/AVC 2025 test, approved consumer product",
+      "VIPRE": "Advanced+ in March 2025 malware protection test, 98.7% detection rate, 99.93% overall protection",
+      "Elastic": "Approved enterprise product in 2024 business security test"
+    }
+  },
+
+  "tier3": {
+    "description": "All other vendors not in Tier 1 or Tier 2. Still count as signal but with low weight. Includes noisy engines, regional vendors, and those without independent test track records.",
+    "note": "Any vendor not listed in tier1 or tier2 defaults to tier3 automatically in the scoring logic."
+  },
+
+  "tag_weights": {
+    "_note": "Weights for VT/OTX tags on network IOCs (IPs, domains). Score is summed then capped at tag_cap.",
+    "tag_cap": 5,
+
+    "critical": {
+      "_comment": "Active attack infrastructure — near-certain malicious",
+      "c2": 4,
+      "ransomware": 4,
+      "apt": 4,
+      "malware-distribution": 4,
+      "exploit-kit": 4,
+      "botnet-controller": 4
+    },
+
+    "high": {
+      "_comment": "Strong indicators of malicious activity",
+      "botnet": 3,
+      "phishing": 3,
+      "malware": 3,
+      "trojan": 3,
+      "infostealer": 3,
+      "dropper": 3,
+      "backdoor": 3,
+      "rat": 3,
+      "cryptominer": 3,
+      "ddos": 3,
+      "spam": 3
+    },
+
+    "medium": {
+      "_comment": "Suspicious infrastructure — not always malicious but worth escalating",
+      "tor": 2,
+      "tor-exit-node": 2,
+      "self-signed": 2,
+      "brute-force": 2,
+      "ssh-brute-force": 2,
+      "rdp-brute-force": 2,
+      "credential-stuffing": 2,
+      "port-scan": 2,
+      "vulnerability-scan": 2,
+      "proxy": 2,
+      "vpn": 2,
+      "anonymizer": 2,
+      "bulletproof-hosting": 2,
+      "dynamic-dns": 2,
+      "newly-registered-domain": 2
+    },
+
+    "low": {
+      "_comment": "Weak signal on its own — only meaningful combined with other tags",
+      "scanner": 1,
+      "suspicious": 1,
+      "potentially-unwanted": 1,
+      "adware": 1,
+      "tracking": 1,
+      "parked-domain": 1
+    }
+  },
+
+  "vt_engine_name_aliases": {
+    "note": "VirusTotal engine names sometimes differ from vendor marketing names. Map them here.",
+    "Bitdefender": ["Bitdefender", "BitDefender"],
+    "ESET": ["ESET-NOD32", "ESET"],
+    "Kaspersky": ["Kaspersky"],
+    "Avast": ["Avast"],
+    "AVG": ["AVG"],
+    "G Data": ["GData", "G Data"],
+    "Norton": ["Norton", "NortonLifeLock"],
+    "CrowdStrike": ["CrowdStrike", "CrowdStrike Falcon"],
+    "Microsoft": ["Microsoft", "Defender", "Microsoft Defender Antivirus"],
+    "Sophos": ["Sophos"],
+    "Trend Micro": ["TrendMicro", "Trend Micro"],
+    "McAfee": ["McAfee"],
+    "Malwarebytes": ["Malwarebytes"],
+    "F-Secure": ["F-Secure", "WithSecure"],
+    "VIPRE": ["VIPRE"],
+    "Emsisoft": ["Emsisoft"],
+    "Elastic": ["Elastic"],
+    "Palo Alto Networks": ["Palo Alto Networks", "PaloAltoNetworks"],
+    "Symantec": ["Symantec"],
+    "Total Defense": ["Total Defense", "TotalDefense"],
+    "Fortect": ["Fortect"],
+    "K7": ["K7", "K7AntiVirus"]
+  }
+}

@@ -3,156 +3,264 @@ import datetime
 from detect import detect_type
 from vt import vt_check
 from otx import otx_check
+from shodan import shodan_check
 from abuseipdb import abuseipdb_check
 from scoring import combined_verdict, load_config, resolve_vendor
-from output import save_results, print_history, get_history_entry, get_history_count
+from cache import clear_cache
+from output import save_results, print_history, get_history_entry, get_history_count, clear_history
+
 
 config = load_config("config.json")
+VERBOSE = False
 
 
-def display_report(indicator, ind_type, vt, otx, abuse):
+def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
 
-    print(f"\n{'='*45}")
-    print(f"  Threat Report: {indicator}")
-    print(f"{'='*45}")
+    verdict_result = combined_verdict(vt, otx, abuse, shodan, config=config)
 
-    # Print VT results
-    if vt:
-        print(f"\n  [VirusTotal]")
-        print(f"  Malicious  : {vt['malicious']}")
-        print(f"  Suspicious : {vt['suspicious']}")
-        print(f"  Harmless   : {vt['harmless']}")
-        print(f"  Undetected : {vt['undetected']}")
+    if not VERBOSE:
+        print(f"\n{'='*45}")
+        print(f"  Threat Report: {indicator}")
+        print(f"{'='*45}")
 
-        if ind_type == "ip":
-            print(f"  Country    : {vt['country']}")
-            print(f"  ASN        : {vt['asn']}")
-
-        if len(vt["tags"]) > 0:
-            print(f"  Tags       : {', '.join(vt['tags'][:5])}")
-
-        if vt["last_scan_date"]:
-            scan_date = datetime.datetime.fromtimestamp(vt["last_scan_date"])
-            print(f"  Last Scan  : {scan_date.strftime('%Y-%m-%d %H:%M')}")
-
-        if vt["dns_records"]:
-            print(f"\n  Last DNS Records:")
-            for rec in vt["dns_records"]:
-                print(f"    {rec}")
-
-        if len(vt["malicious_vendors"]) > 0:
-            print(f"\n  Top Malicious Detections:")
-
-            def _vendor_tier(v):
-                canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
-                if canonical in config["tier1"]:
-                    return 1
-                elif canonical in config["tier2"]:
-                    return 2
-                return 3
-
-            for v in sorted(vt["malicious_vendors"], key=_vendor_tier):
-                canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
-                if canonical in config["tier1"]:
-                    tier_label = "(Tier 1)"
-                elif canonical in config["tier2"]:
-                    tier_label = "(Tier 2)"
+        # VirusTotal summary line
+        if vt:
+            malicious = vt['malicious']
+            harmless  = vt['harmless']
+            if malicious == 0:
+                tier_summary = "clean"
+            else:
+                tier1_hits = tier2_hits = 0
+                for v in vt.get("malicious_vendors", []):
+                    canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
+                    if canonical in config["tier1"]:
+                        tier1_hits += 1
+                    elif canonical in config["tier2"]:
+                        tier2_hits += 1
+                if tier1_hits > 0:
+                    tier_summary = "includes Tier 1"
+                elif tier2_hits > 0:
+                    tier_summary = "includes Tier 2"
                 else:
-                    tier_label = "(Tier 3)"
-                print(f"    {v['vendor']:<20} {v['name']:<30} {tier_label}")
+                    tier_summary = "Tier 3 only"
+            print(f"\n  [VirusTotal]    {malicious} malicious / {harmless} harmless — {tier_summary}")
+        else:
+            print(f"\n  [VirusTotal]    no data")
 
-    # Print OTX results
-    if otx:
-        print(f"\n  [AlienVault OTX]")
+        # OTX summary line
+        if otx:
+            pulse_count   = otx['pulse_count']
+            pulse_details = otx.get("pulse_details", [])
+            adversary     = next((p["adversary"] for p in pulse_details if p.get("adversary")), None)
+            family        = next((p["families"][0] for p in pulse_details if p.get("families")), None)
+            if adversary:
+                top_signal = f"APT: {adversary}"
+            elif family:
+                top_signal = f"family: {family}"
+            elif pulse_count > 0:
+                top_signal = f"{pulse_count} pulses"
+            else:
+                top_signal = "no data"
+            print(f"  [OTX]           {pulse_count} pulses — {top_signal}")
+        else:
+            print(f"  [OTX]           no data")
 
-        if ind_type == "ip":
-            print(f"  Country    : {otx['country']}")
-            print(f"  ASN        : {otx['asn']}")
-            print(f"  Reputation : {otx['reputation']}")
+        # AbuseIPDB summary line
+        if abuse:
+            print(f"  [AbuseIPDB]     {abuse['total_reports']} reports, {abuse['distinct_users']} users — confidence {abuse['abuse_score']}%")
+        else:
+            print(f"  [AbuseIPDB]     no data")
 
-        print(f"  Pulses     : {otx['pulse_count']} threat reports")
+        # Shodan summary line
+        if shodan:
+            org = shodan.get('org') or 'Unknown'
+            asn = (shodan.get('asn') or '').strip().upper()
+            if asn in config.get('trusted_asns', {}):
+                print(f"  [Shodan]        {org} (CDN/cloud — limited scoring)")
+            else:
+                ports     = shodan.get('ports', [])
+                ports_str = ', '.join(str(p) for p in ports) if ports else "no suspicious findings"
+                print(f"  [Shodan]        {org} — {ports_str}")
+        else:
+            print(f"  [Shodan]        no data")
 
-        pulse_details = otx.get("pulse_details", [])
+        print(f"\n  Verdict        : {verdict_result['final_verdict_display']}")
+        print(f"  Confidence     : {verdict_result['blended_confidence']}")
+        print(f"  Recommendation : {verdict_result['recommendation']}")
+        print(f"  Triggered by   : {', '.join(verdict_result['triggered_by'])}")
+        print(f"  Consensus      : {verdict_result['consensus_ratio']}")
+        print(f"{'='*45}\n")
 
-        for i, p in enumerate(pulse_details, 1):
-            print(f"\n  Pulse #{i}: {p['name']}")
+    else:
+        # Verbose: full source detail + score breakdown
+        print(f"\n{'='*45}")
+        print(f"  Threat Report: {indicator}")
+        print(f"{'='*45}")
 
-            if p["adversary"] != "":
-                print(f"    Threat Actor  : {p['adversary']}")
+        if vt:
+            print(f"\n  [VirusTotal]")
+            print(f"  Malicious  : {vt['malicious']}")
+            print(f"  Suspicious : {vt['suspicious']}")
+            print(f"  Harmless   : {vt['harmless']}")
+            print(f"  Undetected : {vt['undetected']}")
 
-            if len(p["families"]) > 0:
-                print(f"    Malware Family: {', '.join(p['families'])}")
+            if ind_type == "ip":
+                print(f"  Country    : {vt['country']}")
+                print(f"  ASN        : {vt['asn']}")
 
-            if len(p["tags"]) > 0:
-                print(f"    Tags          : {', '.join(p['tags'][:5])}")
+            if len(vt["tags"]) > 0:
+                print(f"  Tags       : {', '.join(vt['tags'][:5])}")
 
-            if p["ref"] != "":
-                print(f"    Reference     : {p['ref']}")
+            if vt["last_scan_date"]:
+                scan_date = datetime.datetime.fromtimestamp(vt["last_scan_date"])
+                print(f"  Last Scan  : {scan_date.strftime('%Y-%m-%d %H:%M')}")
 
-        pdns = otx.get("passive_dns", [])
-        if pdns:
-            print(f"\n  Passive DNS ({len(pdns)} record(s), showing first 10):")
-            for r in pdns[:10]:
-                first = r["first"][:10] if r["first"] else "?"
-                last  = r["last"][:10]  if r["last"]  else "?"
-                print(f"    [{r['record_type']:<5}] {r['hostname'] or r['address']:<40}  first: {first}  last: {last}")
+            if vt["dns_records"]:
+                print(f"\n  Last DNS Records:")
+                for rec in vt["dns_records"]:
+                    print(f"    {rec}")
 
-    # Print AbuseIPDB results
-    if abuse:
-        print(f"\n  [AbuseIPDB]")
-        print(f"  Abuse Score    : {abuse['abuse_score']}%")
-        print(f"  Total Reports  : {abuse['total_reports']}  ({abuse['distinct_users']} distinct users)")
-        print(f"  ISP            : {abuse['isp']}")
-        print(f"  Tor Exit Node  : {'Yes' if abuse['is_tor'] else 'No'}")
-        if abuse['last_reported']:
-            print(f"  Last Reported  : {abuse['last_reported'][:10]}")
+            if len(vt["malicious_vendors"]) > 0:
+                print(f"\n  Top Malicious Detections:")
 
-        if abuse['top_categories']:
-            print(f"\n  Top Attack Types:")
-            for name, count in abuse['top_categories'][:5]:
-                print(f"    {name:<25} {count} report(s)")
+                def _vendor_tier(v):
+                    canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
+                    if canonical in config["tier1"]:
+                        return 1
+                    elif canonical in config["tier2"]:
+                        return 2
+                    return 3
 
-        if abuse['reports']:
-            print(f"\n  Recent Reports:")
-            _firewall_words   = {'ttl', 'ufw', 'tos', 'packet', 'port'}
-            _threat_keywords  = {'malware', 'phishing', 'ransomware', 'trojan', 'botnet', 'actor'}
-            for r in abuse['reports']:
-                date = r['reported_at'][:10] if r['reported_at'] else '?'
-                cats = ', '.join(r['categories']) if r['categories'] else 'None'
-                print(f"    [{date}] {cats}")
-                comment = (r['comment'] or '').strip()
-                if comment:
-                    lower = comment.lower()
-                    is_firewall = any(w in lower for w in _firewall_words)
-                    has_domain  = '.' in comment and not comment.replace('.', '').replace(':', '').replace('/', '').replace(' ', '').isdigit()
-                    has_threat  = any(k in lower for k in _threat_keywords)
-                    if not is_firewall and (has_domain or has_threat):
-                        print(f"             {comment[:80]}")
+                for v in sorted(vt["malicious_vendors"], key=_vendor_tier):
+                    canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
+                    if canonical in config["tier1"]:
+                        tier_label = "(Tier 1)"
+                    elif canonical in config["tier2"]:
+                        tier_label = "(Tier 2)"
+                    else:
+                        tier_label = "(Tier 3)"
+                    print(f"    {v['vendor']:<20} {v['name']:<30} {tier_label}")
 
-    # Score breakdown and verdict
-    verdict_result = combined_verdict(vt, otx, abuse, config=config)
+        if otx:
+            print(f"\n  [AlienVault OTX]")
 
-    print(f"\n  Score Breakdown:")
-    for line in verdict_result["breakdown"]:
-        print(f"    {line}")
-    print(f"  {'─'*40}")
-    print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (score: {verdict_result['score']})")
-    print(f"  Recommendation : {verdict_result['recommendation']}")
-    print(f"  Consensus      : {verdict_result['consensus_ratio']}")
-    print(f"  Confidence     : {verdict_result['confidence']} (source)  |  {verdict_result['system_confidence']} (system)")
-    print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
-    print(f"  Mode           : {verdict_result['mode']}")
-    print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
-    if verdict_result['inactive_sources']:
-        print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
-    print()
-    print(f"  Per Source:")
-    for name, s in verdict_result['per_source'].items():
-        print(f"    {name:<12}: {s['verdict_display']}  (confidence: {s['confidence']}, evidence: {s['evidence_count']})")
-    print(f"  Contribution   :")
-    for name, pct in verdict_result['contribution'].items():
-        print(f"    {name:<12}: {pct}")
-    print(f"{'='*45}\n")
+            if ind_type == "ip":
+                print(f"  Country    : {otx['country']}")
+                print(f"  ASN        : {otx['asn']}")
+                print(f"  Reputation : {otx['reputation']}")
+
+            print(f"  Pulses     : {otx['pulse_count']} threat reports")
+
+            pulse_details = otx.get("pulse_details", [])
+
+            for i, p in enumerate(pulse_details, 1):
+                print(f"\n  Pulse #{i}: {p['name']}")
+
+                if p["adversary"] != "":
+                    print(f"    Threat Actor  : {p['adversary']}")
+
+                if len(p["families"]) > 0:
+                    print(f"    Malware Family: {', '.join(p['families'])}")
+
+                if len(p["tags"]) > 0:
+                    print(f"    Tags          : {', '.join(p['tags'][:5])}")
+
+                if p["ref"] != "":
+                    print(f"    Reference     : {p['ref']}")
+
+            pdns = otx.get("passive_dns", [])
+            if pdns:
+                print(f"\n  Passive DNS ({len(pdns)} record(s), showing first 5):")
+                for r in pdns[:5]:
+                    first = r["first"][:10] if r["first"] else "?"
+                    last  = r["last"][:10]  if r["last"]  else "?"
+                    print(f"    [{r['record_type']:<5}] {r['hostname'] or r['address']:<40}  first: {first}  last: {last}")
+
+        if abuse:
+            print(f"\n  [AbuseIPDB]")
+            print(f"  Abuse Score    : {abuse['abuse_score']}%")
+            print(f"  Total Reports  : {abuse['total_reports']}  ({abuse['distinct_users']} distinct users)")
+            print(f"  ISP            : {abuse['isp']}")
+            print(f"  Tor Exit Node  : {'Yes' if abuse['is_tor'] else 'No'}")
+            if abuse['last_reported']:
+                print(f"  Last Reported  : {abuse['last_reported'][:10]}")
+
+            if abuse['top_categories']:
+                print(f"\n  Top Attack Types:")
+                for name, count in abuse['top_categories'][:5]:
+                    print(f"    {name:<25} {count} report(s)")
+
+            if abuse['reports']:
+                print(f"\n  Recent Reports:")
+                _firewall_words  = {'ttl', 'ufw', 'tos', 'packet', 'port'}
+                _threat_keywords = {'malware', 'phishing', 'ransomware', 'trojan', 'botnet', 'actor'}
+                for r in abuse['reports']:
+                    date = r['reported_at'][:10] if r['reported_at'] else '?'
+                    cats = ', '.join(r['categories']) if r['categories'] else 'None'
+                    print(f"    [{date}] {cats}")
+                    comment = (r['comment'] or '').strip()
+                    if comment:
+                        lower = comment.lower()
+                        is_firewall = any(w in lower for w in _firewall_words)
+                        has_domain  = '.' in comment and not comment.replace('.', '').replace(':', '').replace('/', '').replace(' ', '').isdigit()
+                        has_threat  = any(k in lower for k in _threat_keywords)
+                        if not is_firewall and (has_domain or has_threat):
+                            print(f"             {comment[:80]}")
+
+        if shodan:
+            print(f"\n  [Shodan]")
+            print(f"  Org          : {shodan['org']}")
+            print(f"  ISP          : {shodan['isp']}")
+            print(f"  ASN          : {shodan['asn']}")
+            print(f"  OS           : {shodan['os'] or 'Unknown'}")
+            print(f"  Last scan    : {shodan['last_update'][:10] if shodan['last_update'] else 'Unknown'}")
+
+            if shodan['hostnames']:
+                print(f"  Hostnames    : {', '.join(shodan['hostnames'][:3])}")
+            else:
+                print(f"  Hostnames    : None")
+
+            if shodan['ports']:
+                print(f"  Open ports   : {', '.join(str(p) for p in shodan['ports'])}")
+
+            if shodan['tags']:
+                print(f"  Tags         : {', '.join(shodan['tags'])}")
+
+            if shodan['vulns']:
+                print(f"\n  CVEs ({len(shodan['vulns'])} found):")
+                for cve in shodan['vulns'][:5]:
+                    print(f"    {cve}")
+
+            if shodan['services']:
+                print(f"\n  Services:")
+                for svc in shodan['services']:
+                    product = svc['product'] or 'Unknown'
+                    version = svc['version'] or ''
+                    label   = f"{product} {version}".strip()
+                    print(f"    Port {svc['port']:<6} {svc['transport']:<4} {label}")
+
+        print(f"\n  Per Source:")
+        for name, s in verdict_result['per_source'].items():
+            print(f"    {name:<12}: {s['verdict_display']}  (confidence: {s['confidence']}, evidence: {s['evidence_count']})")
+
+        print(f"\n  Score Breakdown:")
+        for line in verdict_result["breakdown"]:
+            print(f"    {line}")
+        print(f"  {'─'*40}")
+
+        print(f"\n  Contribution   :")
+        for name, pct in verdict_result['contribution'].items():
+            print(f"    {name:<12}: {pct}")
+
+        print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (avg score: {verdict_result['score']})")
+        print(f"  Recommendation : {verdict_result['recommendation']}")
+        print(f"  Consensus      : {verdict_result['consensus_ratio']}")
+        print(f"  Confidence     : {verdict_result['blended_confidence']}")
+        print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
+        print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
+        if verdict_result['inactive_sources']:
+            print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
+        print(f"{'='*45}\n")
 
     return verdict_result
 
@@ -168,23 +276,70 @@ def check_indicator(indicator):
     vt    = vt_check(indicator, ind_type)
     otx   = otx_check(indicator, ind_type)
     abuse = abuseipdb_check(indicator, ind_type)
+    shodan = shodan_check(indicator, ind_type)
 
-    verdict_result = display_report(indicator, ind_type, vt, otx, abuse)
-    save_results(indicator, vt, otx, verdict_result["final_verdict"])
+    verdict_result = display_report(indicator, ind_type, vt, otx, abuse,shodan)
+    save_results(indicator, vt, otx,abuse, shodan, verdict_result["final_verdict"])
 
 
 # Main loop
 
+print("╔══════════════════════════════════════════════╗")
+print("║         IOC Investigation Tool               ║")
+print("╠══════════════════════════════════════════════╣")
+print("║  Enter an IP, domain, or file hash           ║")
+print("║  Type 'help' for available commands          ║")
+print("╚══════════════════════════════════════════════╝")
+
 while True:
-    indicator = input("Enter IP, domain, or file hash (or 'exit' to quit, 'history' to view past lookups): ").strip()
+    indicator = input("\n> ").strip()
 
     if indicator.lower() in ("exit", "quit", "q"):
         break
+
+    if indicator.lower() == "help":
+        print(f"""
+  Commands
+  ────────────────────────────────────────
+  history              List past lookups
+  history <n>          Replay lookup #n
+  history clear        Delete all history
+
+  verbose              Show full breakdown
+  brief                Show summary only
+
+  mode                 Show current verdict mode
+  mode weighted        Balanced (default)
+  mode worst_case      Most conservative
+  mode average         Smoothest output
+
+  reset cache          Clear cached API results
+  exit                 Quit
+  ────────────────────────────────────────
+        """)
+        continue
+
+    if indicator.lower() == "verbose":
+        VERBOSE = True
+        print("  Verbose mode on — full breakdown will be shown.")
+        continue
+
+    if indicator.lower() == "brief":
+        VERBOSE = False
+        print("  Brief mode on — summary only.")
+        continue
 
     parts = indicator.split()
     if parts and parts[0].lower() == "history":
         if len(parts) == 1:
             print_history()
+        elif len(parts) == 2 and parts[1].lower() == "clear":
+            confirm = input("  Clear all history? Type 'yes' to confirm: ").strip().lower()
+            if confirm == "yes":
+                clear_history()
+                print("  History cleared.")
+            else:
+                print("  Cancelled.")
         elif len(parts) == 2 and parts[1].isdigit():
             n     = int(parts[1])
             entry = get_history_entry(n)
@@ -194,9 +349,29 @@ while True:
             else:
                 ind_type = detect_type(entry["indicator"])
                 print(f"  (Cached result from {entry['timestamp']})")
-                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], None)
+                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], entry["abuse"], entry["shodan"])
         else:
-            print("  Usage: history  or  history <number>")
+            print("  Usage: history  or  history <number>  or  history clear")
+        continue
+
+    if parts and " ".join(parts[:2]).lower() == "reset cache":
+        confirm = input("  Clear all cached API results? Type 'yes' to confirm: ").strip().lower()
+        if confirm == "yes":
+            clear_cache()
+            print("  API cache cleared.")
+        else:
+            print("  Cancelled.")
+        continue
+
+    if parts and parts[0].lower() == "mode":
+        valid_modes = ("weighted", "worst_case", "average")
+        if len(parts) == 2 and parts[1].lower() in valid_modes:
+            config["default_mode"] = parts[1].lower()
+            print(f"  Mode set to: {config['default_mode']}")
+        else:
+            print(f"  Current mode : {config['default_mode']}")
+            print(f"  Available    : {', '.join(valid_modes)}")
+            print(f"  Usage        : mode <weighted|worst_case|average>")
         continue
 
     check_indicator(indicator)

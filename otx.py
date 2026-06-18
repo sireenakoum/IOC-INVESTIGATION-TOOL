@@ -105,5 +105,6 @@ def otx_check(indicator, ind_type):
         result["country"]    = data.get("country_name", "Unknown")
         result["asn"]        = data.get("asn", "Unknown")
         result["reputation"] = data.get("reputation", 0)
-        cache_set(indicator, "otx", result)
+
+    cache_set(indicator, "otx", result)
     return result

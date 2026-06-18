@@ -28,7 +28,9 @@
       "AVG",
       "G Data",
       "Norton",
-      "CrowdStrike"
+      "Microsoft",
+      "Palo Alto Networks",
+      "Symantec"
     ],
     "evidence": {
       "Bitdefender": "Outstanding Product 2023, Top-Rated 2024 & 2025, lowest avg compromised systems (0.5) across 3 years of business tests",
@@ -45,15 +47,13 @@
   "tier2": {
     "description": "Approved/certified products — solid detection rates, passed independent testing, but not consistent Top-Rated winners.",
     "vendors": [
-      "Microsoft",
+      "CrowdStrike",
       "Sophos",
       "Trend Micro",
       "McAfee",
       "Malwarebytes",
       "F-Secure",
       "Elastic",
-      "Palo Alto Networks",
-      "Symantec",
       "VIPRE",
       "Total Defense",
       "Fortect",
@@ -114,13 +114,13 @@
       "ssh-brute-force": 2,
       "rdp-brute-force": 2,
       "credential-stuffing": 2,
-      "port-scan": 2,
+      "port-scan": 1,
       "vulnerability-scan": 2,
-      "proxy": 2,
-      "vpn": 2,
+      "proxy": 1,
+      "vpn": 0,
       "anonymizer": 2,
       "bulletproof-hosting": 2,
-      "dynamic-dns": 2,
+      "dynamic-dns": 1,
       "newly-registered-domain": 2
     },
 
@@ -133,6 +133,23 @@
       "tracking": 1,
       "parked-domain": 1
     }
+  },
+
+  "vt_file_tags": {
+    "spreader":                 3,
+    "overlay":                  2,
+    "pedll":                    2,
+    "detect-debug-environment": 2,
+    "ransomware":               4,
+    "worm":                     3,
+    "backdoor":                 3,
+    "trojan":                   3,
+    "infostealer":              3,
+    "dropper":                  3,
+    "downloader":               2,
+    "packer":                   1,
+    "obfuscated":               1,
+    "encrypted":                1
   },
 
   "vt_engine_name_aliases": {
@@ -165,8 +182,77 @@
     "Lazarus", "APT28", "APT29", "APT30", "APT41",
     "FIN7", "FIN8", "Sandworm", "Cozy Bear", "Fancy Bear",
     "Winnti", "Turla", "Kimsuky", "Scattered Spider",
-    "BlackCat", "LockBit"
+    "BlackCat", "LockBit",
+    "Volt Typhoon", "Salt Typhoon", "UNC2452", "UNC3944",
+    "MuddyWater", "Mustang Panda", "APT10", "APT31",
+    "TA505", "TA551", "DarkSide", "Black Basta",
+    "Akira", "Cl0p", "Medusa"
   ],
 
-  "default_verdict_mode": "worst_case"
+  "default_verdict_mode": "weighted",
+  "suspicious_ports": {
+    "4444":  {"weight": 2, "reason": "Metasploit default listener"},
+    "1337":  {"weight": 2, "reason": "common C2 port"},
+    "9001":  {"weight": 2, "reason": "Tor relay"},
+    "6667":  {"weight": 2, "reason": "IRC botnet C2"},
+    "6666":  {"weight": 2, "reason": "IRC botnet C2"},
+    "31337": {"weight": 3, "reason": "classic backdoor port"},
+    "5554":  {"weight": 2, "reason": "Sasser worm"},
+    "12345": {"weight": 2, "reason": "classic trojan port NetBus"},
+    "27374": {"weight": 2, "reason": "SubSeven RAT"}
+},
+
+"suspicious_products": {
+    "cobalt strike":   {"weight": 4, "reason": "commercial C2 framework"},
+    "metasploit":      {"weight": 4, "reason": "exploitation framework"},
+    "meterpreter":     {"weight": 4, "reason": "Metasploit payload"},
+    "empire":          {"weight": 4, "reason": "post-exploitation framework"},
+    "covenant":        {"weight": 3, "reason": "C2 framework"},
+    "havoc":           {"weight": 3, "reason": "C2 framework"},
+    "sliver":          {"weight": 3, "reason": "C2 framework"},
+    "brute ratel":     {"weight": 4, "reason": "commercial C2 framework"},
+    "poshc2":          {"weight": 3, "reason": "C2 framework"},
+    "mythic":          {"weight": 3, "reason": "C2 framework"},
+    "quasar rat":      {"weight": 4, "reason": "remote access trojan"},
+    "async rat":       {"weight": 4, "reason": "remote access trojan"},
+    "njrat":           {"weight": 4, "reason": "remote access trojan"},
+    "remcos":          {"weight": 4, "reason": "remote access trojan"},
+    "xmrig":           {"weight": 3, "reason": "cryptominer"},
+    "supershell":      {"weight": 3, "reason": "webshell C2 framework"},
+    "godzilla":        {"weight": 3, "reason": "webshell"},
+    "neo-regeorg":     {"weight": 3, "reason": "tunnel webshell"},
+    "frp":             {"weight": 2, "reason": "reverse proxy tunneling tool"},
+    "ngrok":           {"weight": 2, "reason": "reverse proxy tunneling tool"},
+    "chisel":          {"weight": 2, "reason": "TCP tunneling tool"}
+},
+
+"shodan_tags": {
+    "compromised":       {"weight": 3, "reason": "Shodan confirmed compromised"},
+    "malware":           {"weight": 3, "reason": "Shodan confirmed malware"},
+    "botnet":            {"weight": 3, "reason": "part of a botnet"},
+    "c2":                {"weight": 4, "reason": "command and control server"},
+    "scanner":           {"weight": 2, "reason": "actively scanning the internet"},
+    "honeypot":          {"weight": 1, "reason": "possible honeypot"},
+    "tor":               {"weight": 2, "reason": "Tor node"},
+    "vpn":               {"weight": 1, "reason": "VPN endpoint"},
+    "self-signed":       {"weight": 1, "reason": "self-signed certificate"},
+    "doublepulsar":      {"weight": 4, "reason": "NSA backdoor implant detected"},
+    "eternalblue":       {"weight": 4, "reason": "MS17-010 exploit detected"}
+},
+
+"trusted_asns": {
+    "AS13335": "Cloudflare",
+    "AS15169": "Google",
+    "AS16509": "Amazon",
+    "AS8075":  "Microsoft",
+    "AS54113": "Fastly",
+    "AS20940": "Akamai"
+},
+
+"source_reliability": {
+    "VirusTotal":  1.0,
+    "OTX":         0.8,
+    "AbuseIPDB":   0.6,
+    "Shodan":      0.7
+}
 }

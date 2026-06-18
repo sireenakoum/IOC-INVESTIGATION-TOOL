@@ -57,6 +57,13 @@ def cache_get(ioc, source, max_age_days=7):
     print(f"  [CACHE HIT] {source} — cached {age_days} day(s) ago")
     return json.loads(row[0])
 
+def clear_cache():
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM cache")
+    conn.commit()
+    conn.close()
+
 def cache_set(ioc, source, result):
     init_db()
     conn = sqlite3.connect(DB_PATH)

@@ -1,5 +1,7 @@
 import requests
 import os
+from cache import cache_get, cache_set
+
 
 CATEGORY_NAMES = {
     1:  "DNS Compromise",
@@ -30,6 +32,10 @@ CATEGORY_NAMES = {
 def abuseipdb_check(indicator, ind_type):
     if ind_type != "ip":
         return None
+
+    cached = cache_get(indicator, "abuseipdb")
+    if cached:
+        return cached
 
     api_key = os.getenv("ABUSEIPDB_API_KEY")
     if not api_key:
@@ -88,7 +94,8 @@ def abuseipdb_check(indicator, ind_type):
             "comment":     report.get("comment", ""),
         })
 
-    return {
+
+    result={
         "abuse_score":    abuse_score,
         "total_reports":  total_reports,
         "distinct_users": distinct_users,
@@ -99,3 +106,6 @@ def abuseipdb_check(indicator, ind_type):
         "top_categories": top_categories,
         "reports":        reports,
     }
+    
+    cache_set(indicator,"abuseipdb",result)
+    return result

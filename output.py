@@ -40,29 +40,35 @@ def init_history_table():
             indicator   TEXT NOT NULL UNIQUE,
             vt_result   TEXT,
             otx_result  TEXT,
+            abuse_result TEXT,
+            shodan_result TEXT,
             verdict     TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-def save_results(indicator, vt_result, otx_result, verdict):
+def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, verdict):
     init_history_table()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO history (timestamp, indicator, vt_result, otx_result, verdict)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO history (timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(indicator) DO UPDATE SET
             timestamp  = excluded.timestamp,
             vt_result  = excluded.vt_result,
             otx_result = excluded.otx_result,
+            abuse_result = excluded.abuse_result,
+            shodan_result = excluded.shodan_result,
             verdict    = excluded.verdict
     """, (
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         indicator,
         json.dumps(vt_result),
         json.dumps(otx_result),
+        json.dumps(abuse_result),
+        json.dumps(shodan_result),
         verdict
     ))
     conn.commit()
@@ -79,13 +85,20 @@ def get_history_count():
     conn.close()
     return total
 
+def clear_history():
+    init_history_table()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM history")
+    conn.commit()
+    conn.close()
+
 def get_history_entry(n):
     """Return the nth history entry (1-indexed, newest first), or None if out of range."""
     init_history_table()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT timestamp, indicator, vt_result, otx_result, verdict
+        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict
         FROM history
         ORDER BY id DESC
         LIMIT 1 OFFSET ?
@@ -94,11 +107,13 @@ def get_history_entry(n):
     conn.close()
     if not row:
         return None
-    timestamp, indicator, vt_json, otx_json, verdict = row
+    timestamp, indicator, vt_json, otx_json, abuse_json, shodan_json, verdict = row
     return {
         "timestamp": timestamp,
         "indicator": indicator,
         "vt":        json.loads(vt_json)  if vt_json  else None,
         "otx":       json.loads(otx_json) if otx_json else None,
+        "abuse":     json.loads(abuse_json)  if abuse_json  else None,
+        "shodan":    json.loads(shodan_json) if shodan_json else None,
         "verdict":   verdict,
     }

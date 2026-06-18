@@ -310,7 +310,14 @@ def score_otx(otx, config=None):
 
         # OTX doesn't expose a reliable created_at field via the indicator API,
         # so we look for the year in the pulse name as a cheap recency heuristic.
-        if "2026" in p.get("name", "") or "2025" in p.get("name", ""):
+        pulse_name = p.get("name", "")
+        pulse_ref  = p.get("ref", "")
+        pulse_tags_str = " ".join(p.get("tags", []))
+        if (
+            "2026" in pulse_name or "2025" in pulse_name or
+            "2026" in pulse_ref  or "2025" in pulse_ref  or
+            "2026" in pulse_tags_str or "2025" in pulse_tags_str
+        ):
             recent_pulse_found = True
 
         # Pulse tag scoring
@@ -728,12 +735,17 @@ def combined_verdict(vt=None, otx=None, abuse=None,shodan=None, mode=None, confi
             "final_verdict":         "no_data",
             "final_verdict_display": VERDICT_DISPLAY["no_data"],
             "confidence":            None,
+            "system_confidence":     None,
+            "blended_confidence":    None,
             "triggered_by":          [],
             "mode":                  mode,
             "score":                 0,
             "corroboration_count":   0,
             "consensus_ratio":       "Weak (0/0)",
             "recommendation":        RECOMMENDATIONS["no_data"],
+            "active_sources":        [],
+            "inactive_sources":      list(sources.keys()),
+            "contribution":          {name: "no data" for name in sources},
             "per_source": {
                 name: {
                     "verdict":         r["verdict"],

@@ -44,7 +44,7 @@ python main.py
 | `help` | Show command reference |
 | `exit` / `quit` / `q` | Exit |
 
-Results are saved to `ioc_cache.db` (SQLite). VT/OTX results are cached for 7 days.
+Results are saved to `ioc_cache.db` (SQLite). VT, OTX, and AbuseIPDB results are cached for 7 days.
 
 ---
 
@@ -70,8 +70,7 @@ The displayed **avg score** is the mean of all active sources' individual scores
 | Tier 2 vendor hits | +1 each (cap +3) |
 | Tier 3 vendor hits | +0.5 each (cap +2) |
 | Behavioral tags (e.g. c2, botnet, phishing) | +1–4 each (cap +5) |
-| Scan recency when malicious (≤7 / ≤30 / >180 days) | +2 / +1 / −1 |
-| Harmless majority (30+ / 50+ engines clean) | −1 / −2 |
+| Scan recency when malicious (≤7 / ≤30 days) | +2 / +1 |
 
 Confidence is tier-aware: 2+ Tier-1 hits → high; 1 Tier-1 or 2+ Tier-2 hits → medium.
 
@@ -83,7 +82,7 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 |--------|--------|
 | Quality pulse count (20+ non-noise) | +1 |
 | Negative reputation | +1 |
-| Recent pulse name (2025 / 2026) | +1 |
+| Recent activity indicator (2025 / 2026 in pulse name, tags, or references) | +1 |
 | Pulse tags matching threat categories | +1–4 each (cap +5) |
 | Named adversary (known APT / other) | +4 / +2 (cap +4) |
 | Named malware family | +2 (cap +4) |
@@ -95,10 +94,9 @@ Confidence is quality-driven: adversary/family attribution → high; tag matches
 
 | Signal | Points |
 |--------|--------|
-| Abuse confidence score (10+, 40+, 80+) | +1 / +2 / +3 |
-| Distinct reporters ≥10 (even at 0% confidence) | +1 |
-| Distinct reporters (10+, 50+) when confidence > 0 | +1 / +2 |
-| Last reported ≤7 days / >180 days | +1 / −1 |
+| Abuse confidence score | informational only (not scored) |
+| Distinct reporters (5+, 20+, 50+) | +1 / +2 / +3 |
+| Last reported ≤7 / ≤30 days | +2 / +1 |
 | Tor exit node | +1 |
 
 ### Shodan (IPs only)

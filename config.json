@@ -102,7 +102,17 @@
       "rat": 3,
       "cryptominer": 3,
       "ddos": 3,
-      "spam": 3
+      "spam": 3,
+      "ransomeware": 4,
+      "ransoware": 4,
+      "interlock": 3,
+      "lockbit": 3,
+      "blackcat": 3,
+      "akira": 3,
+      "cl0p": 3,
+      "medusa": 3,
+      "black basta": 3,
+      "darkside": 3
     },
 
     "medium": {

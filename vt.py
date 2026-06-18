@@ -85,7 +85,7 @@ def vt_check(indicator, ind_type):
         return None
 
     if response.status_code == 404:
-        return {"status": "Not found"}
+        return None
     if response.status_code == 429:
         print("  [VT] Rate limit hit, wait a minute and try again")
         return None

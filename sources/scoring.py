@@ -851,15 +851,18 @@ def score_whois(whois, config=None):
 def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mode=None, config=None):
     """Combine per-source scores into a single final verdict.
 
-    Three aggregation modes (set via config or overridden per-call):
-      worst_case  — takes the highest verdict across all active sources; most conservative
-      average     — averages raw scores then maps to a verdict; balances all sources equally
-      weighted    — blends verdicts using fixed source weights (VT 50%, OTX 30%, Abuse 20%),
-                    normalizing to the active subset so missing sources don't dilute the result
+    Three aggregation modes:
+      worst_case  — takes the highest verdict across all active sources
+      average     — weighted average of raw scores using source_reliability weights
+      weighted    — blends verdicts using fixed source weights, normalized to active sources
 
-    Confidence is derived from corroboration (how many sources agree on the final verdict)
-    rather than from any individual source, because cross-source agreement is a stronger
-    signal than a single high-confidence hit.
+    One override rule applies after aggregation:
+      High-confidence floor — if any source independently returns High with medium or high
+      confidence, the final verdict is raised to at least Medium risk. This prevents a strong
+      single-source signal from being averaged away by sources with no data.
+
+    CDN suppression happens at the Shodan scoring level only — not at the verdict level.
+    APT attribution scores +4 in OTX and flows through normal averaging.
     """
 
     if config is None:
@@ -982,27 +985,11 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, mod
     # Recompute verdict after modifier
     final_verdict = score_to_verdict(final_score)
 
-    # Cap verdict at medium_risk for CDN ASNs — shared infrastructure that
-    # legitimately looks suspicious on port and hostname signals alone.
-    # Cloud hosting ASNs (AWS/Azure/GCP) are NOT capped — rented VMs can be genuinely malicious.
-    shodan_asn = ""
-    if shodan and isinstance(shodan, dict):
-        shodan_asn = (shodan.get("asn") or "").strip().upper()
-    if shodan_asn in config.get("cdn_asns", {}):
-        if VERDICT_ORDER.get(final_verdict, 0) > VERDICT_ORDER["medium_risk"]:
-            final_verdict = "medium_risk"
-
     for name, r in active.items():
         if r["verdict"] == "high" and r["confidence"] in ("high", "medium"):
             if VERDICT_ORDER.get(final_verdict, 0) < VERDICT_ORDER["medium_risk"]:
                 final_verdict = "medium_risk"
                 break
-
-    otx_breakdown = sources["OTX"]["breakdown"]
-    has_apt = any("APT actor" in line for line in otx_breakdown)
-    if has_apt:
-        if VERDICT_ORDER.get(final_verdict, 0) < VERDICT_ORDER["high"]:
-            final_verdict = "high"
 
     triggered_by        = [
         name for name, r in active.items()

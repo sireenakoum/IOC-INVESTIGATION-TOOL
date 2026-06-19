@@ -178,10 +178,10 @@ The displayed **Confidence** value is blended: it reconciles per-source detectio
 
 **Proximity-based consensus:** a source corroborates if its verdict is within one step of the final verdict (e.g. Medium supports a High final verdict).
 
-**Automatic escalation rules** (applied after mode calculation, in order):
-1. **Trusted ASN cap** — if the IP belongs to a trusted CDN/cloud ASN, the final verdict is capped at Medium risk.
-2. **High-confidence floor** — if any source independently returns High with high or medium confidence, the final verdict is raised to at least Medium risk.
-3. **APT actor escalation** — if OTX attributes the indicator to an APT actor, the final verdict is raised to at least High, regardless of other sources.
+**Override rule** (applied after mode calculation):
+- **High-confidence floor** — if any source independently returns High with high or medium confidence, the final verdict is raised to at least Medium risk. This prevents a strong single-source signal from being averaged away by sources with no data.
+
+CDN suppression happens inside `score_shodan()` at the feature level — the combined verdict is not capped for CDN ASNs. APT attribution scores +4 in `score_otx()` and flows through normal averaging — there is no separate escalation rule at the verdict level.
 
 ---
 

@@ -206,16 +206,24 @@ def score_vt(vt, config):
         scan_date = datetime.datetime.fromtimestamp(vt["last_scan_date"])
         days_ago  = (now - scan_date).days
 
-        if days_ago <= 7:
-            score += 2
-            breakdown.append(f"Last scanned {days_ago} days ago       → +2")
-        elif days_ago <= 30:
-            score += 1
-            breakdown.append(f"Last scanned {days_ago} days ago       → +1")
-        elif days_ago > 180:
-            breakdown.append(f"Last scanned {days_ago} days ago       → +0  (old, not penalized)")
+        qualifies_for_recency = (
+            malicious >= 2 or
+            tier1_hits >= 1 or
+            tier2_hits >= 2
+        )
+        if qualifies_for_recency:
+            if days_ago <= 7:
+                score += 2
+                breakdown.append(f"Last scanned {days_ago} days ago       → +2")
+            elif days_ago <= 30:
+                score += 1
+                breakdown.append(f"Last scanned {days_ago} days ago       → +1")
+            elif days_ago > 180:
+                breakdown.append(f"Last scanned {days_ago} days ago       → +0  (old, not penalized)")
+            else:
+                breakdown.append(f"Last scanned {days_ago} days ago       → +0")
         else:
-            breakdown.append(f"Last scanned {days_ago} days ago       → +0")
+            breakdown.append(f"Last scanned {days_ago} days ago       → +0  (recency skipped — weak detections only)")
     else:
         if vt.get("last_scan_date"):
             breakdown.append(f"Recency skipped — no malicious detections")
@@ -322,11 +330,16 @@ def score_otx(otx, config=None):
 
         # Pulse tag scoring
         if config:
-            for tag in p_tags - NOISE_TAGS:
-                w = config["tag_weights"].get(tag, 0)
-                if w > 0:
-                    pulse_tag_score += w
-                    pulse_tag_contrib[tag] = pulse_tag_contrib.get(tag, 0) + w
+            meaningful_tags = {
+                t for t in p_tags - NOISE_TAGS
+                if config["tag_weights"].get(t, 0) >= 2
+            }
+            if meaningful_tags:
+                for tag in p_tags - NOISE_TAGS:
+                    w = config["tag_weights"].get(tag, 0)
+                    if w > 0:
+                        pulse_tag_score += w
+                        pulse_tag_contrib[tag] = pulse_tag_contrib.get(tag, 0) + w
 
         # Adversary attribution
         adversary = p.get("adversary", "")
@@ -335,8 +348,6 @@ def score_otx(otx, config=None):
             if adversary.lower() in apt_actors:
                 adversary_score = min(adversary_score + 4, 4)
                 apt_hit = True
-            else:
-                adversary_score = min(adversary_score + 2, 4)
 
         # Malware family
         if p.get("families", []):
@@ -398,9 +409,11 @@ def score_otx(otx, config=None):
 
     if latest_pdns:
         days_since = (datetime.datetime.now() - latest_pdns).days
-        if days_since <= 30:
+        if days_since <= 30 and (pulse_count > 0 or reputation < 0):
             score += 1
             breakdown.append(f"Passive DNS last seen {days_since} days ago → +1")
+        elif days_since <= 30:
+            breakdown.append(f"Passive DNS last seen {days_since} days ago → +0  (skipped — no pulse data to corroborate)")
         else:
             breakdown.append(f"Passive DNS last seen {days_since} days ago → +0")
     else:

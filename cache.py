@@ -64,6 +64,16 @@ def clear_cache():
     conn.commit()
     conn.close()
 
+def clear_indicator_cache(ioc):
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM cache WHERE ioc = ?", (ioc,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
 def cache_set(ioc, source, result):
     init_db()
     conn = sqlite3.connect(DB_PATH)

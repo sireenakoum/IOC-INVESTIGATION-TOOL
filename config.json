@@ -199,7 +199,7 @@
     "Akira", "Cl0p", "Medusa"
   ],
 
-  "default_verdict_mode": "weighted",
+  "default_verdict_mode": "average",
   "suspicious_ports": {
     "4444":  {"weight": 2, "reason": "Metasploit default listener"},
     "1337":  {"weight": 2, "reason": "common C2 port"},

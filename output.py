@@ -92,6 +92,16 @@ def clear_history():
     conn.commit()
     conn.close()
 
+def clear_indicator(indicator):
+    init_history_table()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM history WHERE indicator = ?", (indicator,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
 def get_history_entry(n):
     """Return the nth history entry (1-indexed, newest first), or None if out of range."""
     init_history_table()

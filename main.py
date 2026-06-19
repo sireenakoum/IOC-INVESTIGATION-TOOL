@@ -6,8 +6,8 @@ from otx import otx_check
 from shodan import shodan_check
 from abuseipdb import abuseipdb_check
 from scoring import combined_verdict, load_config, resolve_vendor
-from cache import clear_cache
-from output import save_results, print_history, get_history_entry, get_history_count, clear_history
+from cache import clear_cache, clear_indicator_cache
+from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator
 
 
 config = load_config("config.json")
@@ -66,10 +66,13 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None):
             print(f"  [OTX]           no data")
 
         # AbuseIPDB summary line
-        if abuse:
-            print(f"  [AbuseIPDB]     {abuse['total_reports']} reports, {abuse['distinct_users']} users — confidence {abuse['abuse_score']}%")
+        if not abuse or (abuse.get('total_reports', 0) == 0 and
+                         abuse.get('distinct_users', 0) == 0 and
+                         not abuse.get('is_tor', False)):
+            abuse_summary = "no data"
         else:
-            print(f"  [AbuseIPDB]     no data")
+            abuse_summary = f"{abuse['total_reports']} reports, {abuse['distinct_users']} users — confidence {abuse['abuse_score']}%"
+        print(f"  [AbuseIPDB]     {abuse_summary}")
 
         # Shodan summary line
         if shodan:
@@ -314,6 +317,7 @@ while True:
   mode average         Smoothest output
 
   reset cache          Clear cached API results
+  rescan <indicator>   Delete one IOC from history and cache, then rescan it
   exit                 Quit
   ────────────────────────────────────────
         """)
@@ -361,6 +365,25 @@ while True:
             print("  API cache cleared.")
         else:
             print("  Cancelled.")
+        continue
+
+    if parts and parts[0].lower() == "rescan":
+        if len(parts) < 2:
+            print("  Usage: rescan <ip / domain / hash>")
+            continue
+        target = parts[1].strip()
+        if detect_type(target) is None:
+            print(f"  Invalid indicator: {target}")
+            continue
+        confirm = input(f"  Delete {target} from history and cache and rescan? Type 'yes' to confirm: ").strip().lower()
+        if confirm != "yes":
+            print("  Cancelled.")
+            continue
+        cache_deleted   = clear_indicator_cache(target)
+        history_deleted = clear_indicator(target)
+        print(f"  Cleared {cache_deleted} cache entries and {history_deleted} history entries for {target}")
+        print(f"  Rescanning {target}...")
+        check_indicator(target)
         continue
 
     if parts and parts[0].lower() == "mode":

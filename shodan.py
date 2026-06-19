@@ -31,6 +31,9 @@ def shodan_check(indicator,ind_type):
     if response.status_code==401:
         print("[Shodan] Invalid API key")
         return None
+    if response.status_code==403:
+        print("[Shodan] Access forbidden — this IP may require a paid plan")
+        return None
     if response.status_code==429:
         print("[Shodan] Rate limit hit")
         return None

@@ -41,10 +41,11 @@ python main.py
 | `history <n>` | Replay report for entry #n |
 | `history clear` | Delete all history (prompts for confirmation) |
 | `reset cache` | Clear all cached API results (prompts for confirmation) |
+| `rescan <indicator>` | Delete cache and history for that indicator, then re-query all sources |
 | `help` | Show command reference |
 | `exit` / `quit` / `q` | Exit |
 
-Results are saved to `ioc_cache.db` (SQLite). VT, OTX, and AbuseIPDB results are cached for 7 days.
+Results are saved to `ioc_cache.db` (SQLite). All four sources are cached for 7 days (TTL is hardcoded in `cache.py`).
 
 ---
 
@@ -71,6 +72,8 @@ The displayed **avg score** is the mean of all active sources' individual scores
 | Tier 3 vendor hits | +0.5 each (cap +2) |
 | Behavioral tags (e.g. c2, botnet, phishing) | +1–4 each (cap +5) |
 | Scan recency when malicious (≤7 / ≤30 days) | +2 / +1 |
+
+Recency scoring only applies when there are active malicious detections **and** the detections clear a minimum threshold (`malicious ≥ 2`, or `tier1_hits ≥ 1`, or `tier2_hits ≥ 2`). Weak single-engine hits do not earn a recency bonus.
 
 Confidence is tier-aware: 2+ Tier-1 hits → high; 1 Tier-1 or 2+ Tier-2 hits → medium.
 
@@ -111,7 +114,7 @@ Confidence is quality-driven: adversary/family attribution → high; tag matches
 
 **Minimum evidence threshold:** open ports and a missing hostname alone never push the verdict above Clean. A non-clean verdict requires at least one CVE, suspicious product, or high-weight tag (weight ≥ 3).
 
-**Trusted ASNs** (Cloudflare AS13335, Google AS15169, Amazon AS16509, Microsoft AS8075, Fastly AS54113, Akamai AS20940): port scoring and the hostname penalty are skipped. Only CVEs, confirmed malicious products, and tags with weight ≥ 3 are scored. The final verdict is globally capped at Medium risk.
+**Trusted ASNs** (Cloudflare AS13335, Google AS15169, Amazon AS16509, Microsoft AS8075, Fastly AS54113, Akamai AS20940): port scoring and the hostname penalty are skipped. Only CVEs, confirmed malicious products, and tags with weight ≥ 3 are scored. The final combined verdict is globally capped at Medium risk.
 
 ---
 
@@ -135,9 +138,9 @@ Configured via `default_verdict_mode` in `config.json`:
 
 | Mode | Behavior |
 |------|----------|
-| `weighted` **(default)** | Blends verdicts using fixed weights (VT 40%, OTX 25%, AbuseIPDB 15%, Shodan 20%), scaled by source reliability, renormalized for active sources |
+| `weighted` | Blends verdicts using fixed weights (VT 40%, OTX 25%, AbuseIPDB 15%, Shodan 20%), scaled by source reliability, renormalized for active sources |
 | `worst_case` | Highest verdict across active sources — most conservative |
-| `average` | Averages raw scores scaled by source reliability, then maps to a verdict |
+| `average` **(default)** | Averages raw scores scaled by source reliability, then maps to a verdict |
 
 **Source reliability** scales each source's contribution before blending:
 
@@ -155,6 +158,11 @@ Configured via `default_verdict_mode` in `config.json`:
 The displayed **Confidence** value is blended: it reconciles per-source detection quality against cross-source corroboration. A single high-signal source with weak consensus resolves to low/medium rather than high.
 
 **Proximity-based consensus:** a source corroborates if its verdict is within one step of the final verdict (e.g. Medium supports a High final verdict).
+
+**Automatic escalation rules** (applied after mode calculation, in order):
+1. **Trusted ASN cap** — if the IP belongs to a trusted CDN/cloud ASN, the final verdict is capped at Medium risk.
+2. **High-confidence floor** — if any source independently returns High with high or medium confidence, the final verdict is raised to at least Medium risk.
+3. **APT actor escalation** — if OTX attributes the indicator to an APT actor, the final verdict is raised to at least High, regardless of other sources.
 
 ---
 

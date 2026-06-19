@@ -22,7 +22,10 @@ def otx_check(indicator, ind_type):
     elif ind_type == "hash":
         url = f"{BASE_URL_OTX}/indicators/file/{indicator}/general"
     else:
-        url = f"{BASE_URL_OTX}/indicators/domain/{indicator}/general"
+        # Root domains have 2 parts (google.com), subdomains have 3+ (mail.google.com)
+        parts = indicator.split(".")
+        otx_type = "hostname" if len(parts) > 2 else "domain"
+        url = f"{BASE_URL_OTX}/indicators/{otx_type}/{indicator}/general"
     try:
         response = requests.get(url, headers=headers_OTX, timeout=30)
     except requests.exceptions.Timeout:
@@ -46,7 +49,11 @@ def otx_check(indicator, ind_type):
 
     passive_dns = []
     if ind_type in ("ip", "domain"):
-        otx_type = "IPv4" if ind_type == "ip" else "domain"
+        if ind_type == "ip":
+            otx_type = "IPv4"
+        else:
+            parts = indicator.split(".")
+            otx_type = "hostname" if len(parts) > 2 else "domain"
         pdns_url = f"{BASE_URL_OTX}/indicators/{otx_type}/{indicator}/passive_dns"
         try:
             pdns_resp = requests.get(pdns_url, headers=headers_OTX, timeout=30)
@@ -104,6 +111,8 @@ def otx_check(indicator, ind_type):
     if ind_type == "ip":
         result["country"]    = data.get("country_name", "Unknown")
         result["asn"]        = data.get("asn", "Unknown")
+        result["reputation"] = data.get("reputation", 0)
+    else:
         result["reputation"] = data.get("reputation", 0)
 
     cache_set(indicator, "otx", result)

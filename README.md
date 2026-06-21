@@ -18,7 +18,7 @@ OTX_API_KEY=your_key
 ABUSEIPDB_API_KEY=your_key
 SHODAN_API_KEY=your_key
 WHOIS_API_KEY=your_key
-CENSYS_API_TOKEN=your_bearer_token
+CENSYS_API_KEY=your_bearer_token
 URLSCAN_API_KEY=your_key          # optional
 HYBRID_API_KEY=your_key           # optional
 URLHAUS_API_KEY=your_key          # optional
@@ -53,7 +53,7 @@ python main.py
 | `help` | Show command reference |
 | `exit` / `quit` / `q` | Exit |
 
-Results are saved to `ioc_cache.db` (SQLite). Results are cached indefinitely; use `cache clear` or `cache clear <ioc>` to invalidate entries manually.
+Results are saved to `ioc_cache.db` (SQLite). Results are cached indefinitely; use `reset cache` to clear all entries or `rescan <ioc>` to clear and re-query a single indicator.
 
 ---
 
@@ -113,7 +113,7 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 | Signal | Points |
 |--------|--------|
 | CVEs (1+, 3+, 5+) | +1 / +2 / +3 |
-| Suspicious ports (e.g. 4444, 31337, 6667) | +weight each (cap +4) |
+| Suspicious ports (e.g. 4444, 31337, 6667) | scored only via Shodan+Censys corroboration |
 | Malicious product in banner (e.g. Cobalt Strike, Sliver, XMRig) | +2–4 each (cap +6) |
 | Shodan tags (e.g. compromised, c2, doublepulsar) | +1–4 each (cap +5) |
 | No reverse-DNS hostname | +1 |
@@ -202,10 +202,6 @@ WHOIS is a supporting signal — it strengthens existing suspicion but cannot cr
 | Privacy / proxy masking on registrant | +1 |
 | No registrar found | +1 |
 
-### Trusted ASNs
-
-IPs on CDN or cloud-hosting ASNs (Cloudflare, Fastly, Akamai, AWS, Azure, Google Cloud) have the final combined verdict capped at Medium risk, regardless of the raw score.
-
 ---
 
 ## Vendor tiers
@@ -232,7 +228,7 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 | [sources/otx.py](sources/otx.py) | AlienVault OTX lookups + passive DNS |
 | [sources/abuseipdb.py](sources/abuseipdb.py) | AbuseIPDB lookups |
 | [sources/shodan.py](sources/shodan.py) | Shodan lookups — open ports, CVEs, banners, tags |
-| [sources/censys.py](sources/censys.py) | Censys v2 lookups — ports, services, CVEs, labels |
+| [sources/censys.py](sources/censys.py) | Censys v3 lookups — ports, services, CVEs, labels, hostnames, favicons, SSH fingerprints |
 | [sources/whois.py](sources/whois.py) | WHOIS lookups — domain age, registrar, privacy masking |
 | [sources/greynoise.py](sources/greynoise.py) | GreyNoise community lookups — classification, actor, CVE (IPs only) |
 | [sources/urlhaus.py](sources/urlhaus.py) | URLhaus lookups — malicious URL count and threat type (IPs and domains) |

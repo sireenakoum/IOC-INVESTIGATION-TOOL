@@ -103,17 +103,57 @@ def censys_check(indicator, ind_type):
             labels.append(val)
     last_update = data.get("last_updated_at") or ""
 
+    hostnames = data.get("dns", {}).get("reverse_dns", {}).get("names", [])
+    dns_names = data.get("dns", {}).get("names", [])
+
+    favicon_hashes         = []
+    http_titles            = []
+    http_server_headers    = []
+    ssh_host_key_fingerprints = []
+    hassh_fingerprints     = []
+
+    for svc in data.get("services", []):
+        for endpoint in svc.get("endpoints", []):
+            http = endpoint.get("http", {})
+            for favicon in http.get("favicons", []):
+                h = favicon.get("hash_shodan")
+                if h is not None:
+                    favicon_hashes.append(h)
+            title = http.get("html_title")
+            if title:
+                http_titles.append(title)
+            for sv in http.get("headers", {}).get("Server", {}).get("headers", []):
+                if sv:
+                    http_server_headers.append(sv)
+
+        fp = svc.get("ssh", {}).get("server_host_key", {}).get("fingerprint_sha256")
+        if fp is not None:
+            ssh_host_key_fingerprints.append(fp)
+        hassh = svc.get("ssh", {}).get("hassh_fingerprint")
+        if hassh is not None:
+            hassh_fingerprints.append(hassh)
+
+    os_product = data.get("operating_system", {}).get("product", "")
+
     result = {
-        "ip":           ip,
-        "org":          org,
-        "asn":          asn,
-        "country":      country,
-        "ports":        ports,
-        "services":     services,
-        "vulns":        all_vulns,
-        "labels":       labels,
-        "last_update":  last_update,
-        "certificates": [],
+        "ip":                       ip,
+        "org":                      org,
+        "asn":                      asn,
+        "country":                  country,
+        "ports":                    ports,
+        "services":                 services,
+        "vulns":                    all_vulns,
+        "labels":                   labels,
+        "last_update":              last_update,
+        "certificates":             [],
+        "hostnames":                hostnames,
+        "dns_names":                dns_names,
+        "favicon_hashes":           favicon_hashes,
+        "http_titles":              http_titles,
+        "http_server_headers":      http_server_headers,
+        "ssh_host_key_fingerprints": ssh_host_key_fingerprints,
+        "hassh_fingerprints":       hassh_fingerprints,
+        "os":                       os_product,
     }
 
     cache_set(indicator, "censys", result)

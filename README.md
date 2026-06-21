@@ -53,7 +53,7 @@ python main.py
 | `help` | Show command reference |
 | `exit` / `quit` / `q` | Exit |
 
-Results are saved to `ioc_cache.db` (SQLite). All sources are cached for 7 days (TTL is hardcoded in `cache.py`).
+Results are saved to `ioc_cache.db` (SQLite). Results are cached indefinitely; use `cache clear` or `cache clear <ioc>` to invalidate entries manually.
 
 ---
 
@@ -132,17 +132,19 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 
 ### Shodan + Censys corroboration (IPs only)
 
-Seven cross-source signals confirm whether two independent scanners agree. Total bonus is capped at +4.
+Nine cross-source signals confirm whether two independent scanners agree. Total bonus is capped at +4.
 
 | Signal | Bonus |
 |--------|-------|
-| Suspicious port seen by both scanners | +1 |
+| Suspicious port seen by both scanners (sum of port weights, cap 4) | +1–4 |
 | CVE confirmed by both scanners | +1 |
 | Suspicious product confirmed by both scanners | +1 |
 | Matching product/version banner on the same port | +1 |
 | TLS certificate fingerprint match | +2 |
 | Service overlap ≥ 70% (excluding common ports, 3+ ports each side) | +1 |
 | Both scanned within 7 days | +1 |
+| Favicon hash match (Shodan vs Censys) | +1 |
+| SSH host key fingerprint match (Shodan vs Censys) | +1 |
 
 ### GreyNoise (IPs only)
 
@@ -238,7 +240,7 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 | [sources/hybrid.py](sources/hybrid.py) | Hybrid Analysis lookups — threat score and malware family (IPs, domains, hashes) |
 | [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic, Shodan+Censys corroboration |
 | [output.py](output.py) | History (save, list, retrieve, clear) |
-| [cache.py](cache.py) | SQLite cache (`ioc_cache.db`), 7-day TTL |
+| [cache.py](cache.py) | SQLite cache (`ioc_cache.db`), no expiry |
 | [config.json](config.json) | Vendor tiers, tag weights, suspicious ports/products, trusted ASNs, APT actors |
 
 ---

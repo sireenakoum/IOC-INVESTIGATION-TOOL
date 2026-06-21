@@ -555,7 +555,7 @@ def score_abuse(abuse, config=None, asn=None):
         "breakdown":      breakdown,
     }
 
-def score_shodan(shodan, config=None):
+def score_shodan(shodan, config=None, censys_hostnames=None):
     """Score Shodan data. Returns per-source result dict.
 
     Scoring layers (additive, capped at 15):
@@ -600,26 +600,7 @@ def score_shodan(shodan, config=None):
     if vulns:
         breakdown.append(f"  CVEs: {', '.join(vulns[:5])}")
 
-    port_score    = 0
-    flagged_ports = []
-
-    for port in shodan.get("ports", []):
-        port_str = str(port)
-        if port_str in suspicious_ports:
-            weight = suspicious_ports[port_str]["weight"]
-            reason = suspicious_ports[port_str]["reason"]
-            port_score += weight
-            flagged_ports.append(f"{port} ({reason})")
-
-    port_score = min(port_score, 4)
-    score += port_score
-
-    if flagged_ports:
-        breakdown.append(f"Suspicious ports {len(flagged_ports):<4} → +{port_score}  (cap 4)")
-        for p in flagged_ports:
-            breakdown.append(f"  Port {p}")
-    else:
-        breakdown.append(f"Suspicious ports none → +0")
+    breakdown.append("Suspicious ports → skipped (requires Censys corroboration)")
 
     product_score    = 0
     flagged_products = []
@@ -668,15 +649,15 @@ def score_shodan(shodan, config=None):
         breakdown.append(f"Shodan tags      none → +0")
 
     hostnames = shodan.get("hostnames", [])
-    if not hostnames:
+    effective_hostnames = hostnames or (censys_hostnames or [])
+    if not effective_hostnames:
         score += 1
         breakdown.append(f"No hostname                  → +1  (anonymous infrastructure)")
     else:
-        breakdown.append(f"Hostname: {hostnames[0]:<20} → +0")
+        breakdown.append(f"Hostname: {effective_hostnames[0]:<20} → +0")
 
     has_data = (
         len(vulns) > 0 or
-        len(flagged_ports) > 0 or
         len(flagged_products) > 0 or
         len(flagged_tags) > 0 or
         len(shodan.get("ports", [])) > 0
@@ -697,7 +678,7 @@ def score_shodan(shodan, config=None):
     return {
         "verdict":        verdict,
         "score":          score,
-        "evidence_count": len(vulns) + len(flagged_ports) + len(flagged_products),
+        "evidence_count": len(vulns) + len(flagged_products),
         "has_data":       has_data,
         "breakdown":      breakdown,
         "gated":          False,
@@ -841,6 +822,8 @@ def score_shodan_censys(shodan, censys, config):
         "cert_bonus":            0,
         "service_overlap_bonus": 0,
         "recency_bonus":         0,
+        "favicon_bonus":         0,
+        "ssh_bonus":             0,
         "total_bonus":           0,
         "corroborated_ports":    [],
         "corroborated_cves":     [],
@@ -885,7 +868,10 @@ def score_shodan_censys(shodan, censys, config):
         if either_has_suspicious_product or port_weight >= 3:
             corroborated_ports.append(port_str)
 
-    port_bonus = 1 if corroborated_ports else 0
+    port_bonus = min(
+        sum(suspicious_ports[p].get("weight", 1) for p in corroborated_ports),
+        4,
+    ) if corroborated_ports else 0
 
     # Signal 2 — CVE corroboration (flat +1)
     shodan_cves       = set(shodan.get("vulns", []))
@@ -973,10 +959,21 @@ def score_shodan_censys(shodan, censys, config):
     except (ValueError, TypeError, AttributeError):
         pass
 
+    # Signal 8 — Favicon hash corroboration (flat +1)
+    shodan_favicon  = shodan.get("favicon_hash")
+    censys_favicons = censys.get("favicon_hashes", [])
+    favicon_bonus   = 1 if (shodan_favicon is not None and shodan_favicon in censys_favicons) else 0
+
+    # Signal 9 — SSH host key fingerprint corroboration (flat +1)
+    shodan_ssh_fp  = shodan.get("ssh_fingerprint")
+    censys_ssh_fps = censys.get("ssh_host_key_fingerprints", [])
+    ssh_bonus      = 1 if (shodan_ssh_fp is not None and shodan_ssh_fp in censys_ssh_fps) else 0
+
     total_bonus = min(
         port_bonus + cve_bonus + product_bonus +
         banner_bonus + cert_bonus +
-        service_overlap_bonus + recency_bonus,
+        service_overlap_bonus + recency_bonus +
+        favicon_bonus + ssh_bonus,
         4,
     )
 
@@ -988,6 +985,8 @@ def score_shodan_censys(shodan, censys, config):
         "cert_bonus":            cert_bonus,
         "service_overlap_bonus": service_overlap_bonus,
         "recency_bonus":         recency_bonus,
+        "favicon_bonus":         favicon_bonus,
+        "ssh_bonus":             ssh_bonus,
         "total_bonus":           total_bonus,
         "corroborated_ports":    corroborated_ports,
         "corroborated_cves":     corroborated_cves,
@@ -1293,7 +1292,8 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     otx_result    = score_otx(otx, config=config)
     _abuse_asn    = (shodan.get("asn") or "").strip().upper() if isinstance(shodan, dict) else None
     abuse_result  = score_abuse(abuse, config=config, asn=_abuse_asn or None)
-    shodan_result = score_shodan(shodan, config=config)
+    shodan_result = score_shodan(shodan, config=config,
+                                  censys_hostnames=censys.get("hostnames", []) if isinstance(censys, dict) else None)
     censys_result = score_censys(censys, config=config)
     whois_result     = score_whois(whois, config)
     greynoise_result = score_greynoise(greynoise, config)
@@ -1318,18 +1318,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         name: r for name, r in sources.items()
         if r["has_data"] and not (name == "GreyNoise" and r.get("is_noise"))
     }
-
-    cdn_asns     = config.get("cdn_asns", {})
-    cloud_asns   = config.get("cloud_hosting_asns", {})
-    trusted_asns = set(cdn_asns.keys()) | set(cloud_asns.keys())
-
-    detected_asn = ""
-    if isinstance(shodan, dict):
-        detected_asn = (shodan.get("asn") or "").strip().upper()
-    if not detected_asn and isinstance(censys, dict):
-        detected_asn = (censys.get("asn") or "").strip().upper()
-
-    is_trusted_asn = detected_asn in trusted_asns
 
     if not active:
         return {
@@ -1364,7 +1352,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             "shodan_censys_corroboration": {
                 "port_bonus": 0, "cve_bonus": 0, "product_bonus": 0,
                 "banner_bonus": 0, "cert_bonus": 0, "service_overlap_bonus": 0,
-                "recency_bonus": 0, "total_bonus": 0,
+                "recency_bonus": 0, "favicon_bonus": 0, "ssh_bonus": 0, "total_bonus": 0,
                 "corroborated_ports": [], "corroborated_cves": [],
                 "corroborated_products": [], "corroborated_banners": [],
                 "cert_match": False, "service_overlap_pct": 0,
@@ -1408,10 +1396,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     shodan_country  = (shodan or {}).get("country", "") if isinstance(shodan, dict) else ""
     geo_countries   = {c.upper() for c in [vt_country, censys_country, shodan_country] if c}
     geo_mismatch    = len(geo_countries) > 1
-
-    # Rule 1: trusted ASN caps verdict at medium_risk
-    if is_trusted_asn and VERDICT_ORDER.get(final_verdict, 0) > VERDICT_ORDER["medium_risk"]:
-        final_verdict = "medium_risk"
 
     # Rule 2: High verdict requires at least 2 active sources with score >= 5
     if final_verdict == "high":
@@ -1468,6 +1452,10 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             full_breakdown.append(f"Service overlap {corroboration.get('service_overlap_pct', 0)}% → +{corroboration['service_overlap_bonus']}")
         if corroboration.get("recency_bonus", 0) > 0:
             full_breakdown.append(f"Both scanned within 7 days → +{corroboration['recency_bonus']}")
+        if corroboration.get("favicon_bonus", 0) > 0:
+            full_breakdown.append(f"Favicon hash match → +{corroboration['favicon_bonus']}")
+        if corroboration.get("ssh_bonus", 0) > 0:
+            full_breakdown.append(f"SSH host key fingerprint match → +{corroboration['ssh_bonus']}")
         full_breakdown.append(f"Corroboration total (cap 4) → +{corr_bonus}")
 
     raw_total     = sum(r["score"] for r in active.values())

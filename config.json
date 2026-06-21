@@ -275,7 +275,7 @@
     "doublepulsar":      {"weight": 4, "reason": "NSA backdoor implant detected"},
     "eternalblue":       {"weight": 4, "reason": "MS17-010 exploit detected"},
     "default_landing_page": {"weight": 2, "reason": "unconfigured server — likely attacker VPS"},
-    "remote_access":     {"weight": 2, "reason": "remote access service exposed"},
+    "remote_access":     {"weight": 0, "reason": "remote access service exposed"},
     "crawler":           {"weight": 1, "reason": "web crawler activity"},
     "cdn":               {"weight": 0, "reason": "CDN node — likely shared infrastructure"},
     "cloud-provider":    {"weight": 0, "reason": "cloud provider — likely shared infrastructure"},

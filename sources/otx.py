@@ -26,14 +26,17 @@ def otx_check(indicator, ind_type):
         parts = indicator.split(".")
         otx_type = "hostname" if len(parts) > 2 else "domain"
         url = f"{BASE_URL_OTX}/indicators/{otx_type}/{indicator}/general"
-    try:
-        response = requests.get(url, headers=headers_OTX, timeout=30)
-    except requests.exceptions.Timeout:
-        print("  [OTX] Request timed out, try again later")
-        return None
-    except requests.exceptions.ConnectionError:
-        print("  [OTX] Connection error, check your network")
-        return None
+    for attempt in range(2):
+        try:
+            response = requests.get(url, headers=headers_OTX, timeout=30)
+            break
+        except requests.exceptions.Timeout:
+            if attempt == 1:
+                print("  [OTX] Request timed out after 2 attempts")
+                return None
+        except requests.exceptions.ConnectionError:
+            print("  [OTX] Connection error, check your network")
+            return None
 
     if response.status_code == 404:
         print("  [OTX] No record found")

@@ -92,10 +92,12 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 | Quality pulse count (20+ non-noise) | +1 |
 | Negative reputation | +1 |
 | Recent activity indicator (2025 / 2026 in pulse name, tags, or references) | +1 |
-| Pulse tags matching threat categories | +1–4 each (cap +5) |
+| Pulse tags with weight ≥ 2 (e.g. c2, backdoor, trojan, phishing) | +2–4 each (cap +5) |
 | Named APT actor (from known APT list) | +4 (cap +4) |
 | Named malware family | +2 (cap +4) |
 | Passive DNS last seen ≤30 days | +1 |
+
+Low-weight tags (`scanner`, `proxy`, `exploit`, etc.) never score on OTX pulses — only tags with weight ≥ 2 in `config.json` contribute.
 
 ### AbuseIPDB (IPs only)
 
@@ -103,7 +105,7 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 |--------|--------|
 | Abuse confidence score (40–79% / 80%+) | +1 / +2 |
 | Distinct reporters (5+, 20+, 50+, 100+, 500+) | +1 / +2 / +3 / +4 / +5 |
-| Last reported ≤7 / ≤30 days | +2 / +1 |
+| Last reported ≤7 / ≤30 days (requires ≥ 10 distinct reporters) | +2 / +1 |
 | Tor exit node | +1 |
 | High-severity attack types (e.g. Phishing, Hacking, SQL Injection) | +2 each (cap +4) |
 | Medium-severity attack types (e.g. Brute-Force, SSH) | +1 each (cap +2) |
@@ -186,6 +188,8 @@ Cap: +6.
 |--------|--------|
 | Malicious verdict | +3 |
 | Threat categories (cap +2) | +1 each |
+| Page title contains phishing keywords (e.g. "login", "verify", "account") | +3 (cap +3) |
+| Page title contains suspicious infrastructure keywords (e.g. "tor exit", "proxy") | +1 |
 | Phishing-keyword domains in scan (cap +4) | +2 each |
 
 ### WHOIS (domains only)
@@ -232,7 +236,7 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 | [sources/whois.py](sources/whois.py) | WHOIS lookups — domain age, registrar, privacy masking |
 | [sources/greynoise.py](sources/greynoise.py) | GreyNoise community lookups — classification, actor, CVE (IPs only) |
 | [sources/urlhaus.py](sources/urlhaus.py) | URLhaus lookups — malicious URL count and threat type (IPs and domains) |
-| [sources/urlscan.py](sources/urlscan.py) | URLScan lookups — malicious verdict, categories, phishing domains |
+| [sources/urlscan.py](sources/urlscan.py) | URLScan lookups — malicious verdict, categories, page title, phishing domains |
 | [sources/hybrid.py](sources/hybrid.py) | Hybrid Analysis lookups — threat score and malware family (IPs, domains, hashes) |
 | [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic, Shodan+Censys corroboration |
 | [output.py](output.py) | History (save, list, retrieve, clear) |

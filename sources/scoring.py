@@ -309,16 +309,11 @@ def score_otx(otx, config=None):
 
         # Pulse tag scoring
         if config:
-            meaningful_tags = {
-                t for t in p_tags - NOISE_TAGS
-                if config["tag_weights"].get(t, 0) >= 2
-            }
-            if meaningful_tags:
-                for tag in p_tags - NOISE_TAGS:
-                    w = config["tag_weights"].get(tag, 0)
-                    if w > 0:
-                        pulse_tag_score += w
-                        pulse_tag_contrib[tag] = pulse_tag_contrib.get(tag, 0) + w
+            for tag in p_tags - NOISE_TAGS:
+                w = config["tag_weights"].get(tag, 0)
+                if w >= 2:
+                    pulse_tag_score += w
+                    pulse_tag_contrib[tag] = pulse_tag_contrib.get(tag, 0) + w
 
         # Adversary attribution
         adversary = p.get("adversary", "")
@@ -484,16 +479,19 @@ def score_abuse(abuse, config=None, asn=None):
         try:
             last_dt  = datetime.datetime.fromisoformat(last_reported[:19])
             days_ago = (datetime.datetime.now() - last_dt).days
-            if days_ago <= 7:
-                score += 2
-                breakdown.append(f"Last reported {days_ago} days ago       → +2  (very recent)")
-            elif days_ago <= 30:
-                score += 1
-                breakdown.append(f"Last reported {days_ago} days ago       → +1  (recent)")
-            elif days_ago <= 90:
-                breakdown.append(f"Last reported {days_ago} days ago       → +0")
+            if distinct_users >= 10:
+                if days_ago <= 7:
+                    score += 2
+                    breakdown.append(f"Last reported {days_ago} days ago       → +2  (very recent)")
+                elif days_ago <= 30:
+                    score += 1
+                    breakdown.append(f"Last reported {days_ago} days ago       → +1  (recent)")
+                elif days_ago <= 90:
+                    breakdown.append(f"Last reported {days_ago} days ago       → +0")
+                else:
+                    breakdown.append(f"Last reported {days_ago} days ago       → +0  (old)")
             else:
-                breakdown.append(f"Last reported {days_ago} days ago       → +0  (old)")
+                breakdown.append(f"→ +0 (recency skipped — too few reporters)")
         except (ValueError, TypeError):
             breakdown.append(f"Last reported date unknown  → +0")
     else:
@@ -656,12 +654,7 @@ def score_shodan(shodan, config=None, censys_hostnames=None):
     else:
         breakdown.append(f"Hostname: {effective_hostnames[0]:<20} → +0")
 
-    has_data = (
-        len(vulns) > 0 or
-        len(flagged_products) > 0 or
-        len(flagged_tags) > 0 or
-        len(shodan.get("ports", [])) > 0
-    )
+    has_data = bool(shodan)
 
     score = min(score, 15)
 
@@ -773,12 +766,7 @@ def score_censys(censys, config=None):
     else:
         breakdown.append(f"Censys labels    none → +0")
 
-    has_data = (
-        len(vulns) > 0 or
-        len(flagged_products) > 0 or
-        len(flagged_labels) > 0 or
-        len(censys.get("ports", [])) > 0
-    )
+    has_data = bool(censys)
 
     score = min(score, 15)
 
@@ -1206,7 +1194,7 @@ def score_hybrid(hybrid, config=None):
         breakdown.append(f"Families: none               → +0")
 
     score    = min(score, 6)
-    has_data = threat_score is not None or hybrid.get("verdict") is not None
+    has_data = bool(hybrid)
 
     return {
         "verdict":        score_to_verdict(score) if has_data else "no_data",
@@ -1240,6 +1228,36 @@ def score_urlscan(urlscan, config=None):
     else:
         breakdown.append(f"Categories: none             → +0")
 
+    malicious_title_keywords = [
+        "phishing", "login", "verify", "secure", "account", "update",
+        "confirm", "banking", "wallet", "signin", "portal", "access",
+        "gateway", "support", "helpdesk", "recovery", "suspended",
+        "unusual activity", "verify your identity", "action required",
+    ]
+
+    suspicious_title_keywords = [
+        "tor exit", "tor router", "proxy", "anonymizer", "vpn",
+        "exit node", "relay",
+    ]
+
+    title_score = 0
+    page_title  = (urlscan.get("page_title") or "").lower()
+
+    if page_title:
+        if any(kw in page_title for kw in malicious_title_keywords):
+            title_score += 3
+            breakdown.append(f"Page title [{urlscan['page_title'][:40]}] → +3  (phishing keywords)")
+        elif any(kw in page_title for kw in suspicious_title_keywords):
+            title_score += 1
+            breakdown.append(f"Page title [{urlscan['page_title'][:40]}] → +1  (suspicious infrastructure)")
+        else:
+            breakdown.append(f"Page title [{urlscan['page_title'][:40]}] → +0")
+    else:
+        breakdown.append(f"Page title none              → +0")
+
+    title_score = min(title_score, 3)
+    score += title_score
+
     phishing_keywords = [
         "auth", "login", "verify", "secure", "account", "recovery",
         "member", "update", "confirm", "banking", "wallet", "signin",
@@ -1258,13 +1276,7 @@ def score_urlscan(urlscan, config=None):
     else:
         breakdown.append(f"Phishing domains             → +0")
 
-    has_data = (
-        malicious or
-        len(categories) > 0 or
-        len(urlscan.get("domains") or []) > 0 or
-        urlscan.get("page_title") is not None or
-        urlscan.get("ip") is not None
-    )
+    has_data = bool(urlscan)
 
     return {
         "verdict":        score_to_verdict(score) if has_data else "no_data",

@@ -273,7 +273,16 @@
     "vpn":               {"weight": 1, "reason": "VPN endpoint"},
     "self-signed":       {"weight": 1, "reason": "self-signed certificate"},
     "doublepulsar":      {"weight": 4, "reason": "NSA backdoor implant detected"},
-    "eternalblue":       {"weight": 4, "reason": "MS17-010 exploit detected"}
+    "eternalblue":       {"weight": 4, "reason": "MS17-010 exploit detected"},
+    "default_landing_page": {"weight": 2, "reason": "unconfigured server — likely attacker VPS"},
+    "remote_access":     {"weight": 2, "reason": "remote access service exposed"},
+    "crawler":           {"weight": 1, "reason": "web crawler activity"},
+    "cdn":               {"weight": 0, "reason": "CDN node — likely shared infrastructure"},
+    "cloud-provider":    {"weight": 0, "reason": "cloud provider — likely shared infrastructure"},
+    "attack-framework":  {"weight": 4, "reason": "known attack framework detected"},
+    "phishing":          {"weight": 3, "reason": "phishing infrastructure"},
+    "tor-exit-node":     {"weight": 2, "reason": "Tor exit node"},
+    "proxy":             {"weight": 1, "reason": "proxy service"}
 },
 
 "cdn_asns": {

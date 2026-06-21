@@ -39,7 +39,7 @@ def whois_check(indicator, ind_type):
         print("  [WHOIS] Rate limit hit")
         return None
     if response.status_code != 200:
-        print(f"  [WHOIS] Error {response.status_code}")
+        print(f"  [WHOIS] Error {response.status_code}: {response.text[:200]}")
         return None
 
     whois_record = response.json().get("WhoisRecord", {})

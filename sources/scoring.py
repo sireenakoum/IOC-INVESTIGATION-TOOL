@@ -87,14 +87,13 @@ NOISE_TAGS = {
 }
 
 def score_to_verdict(score):
-    # Thresholds: <=0=clean, 1-2=suspicious, 3-4=low, 5-7=medium, 8+=high
     if score <= 0:
         return "clean"
-    elif score <= 2:
+    elif score <= 3:
         return "suspicious"
-    elif score <= 4:
-        return "low_risk"
     elif score <= 7:
+        return "low_risk"
+    elif score <= 13:
         return "medium_risk"
     else:
         return "high"
@@ -333,6 +332,8 @@ def score_otx(otx, config=None):
         if p.get("families", []):
             family_score = min(family_score + 2, 4)
 
+    pulse_tag_score = min(pulse_tag_score, 3)  # cap per-pulse contribution
+
     # Gate pulse count score on quality: only zero out if the entire sample is noise.
     # pulse_details is a 5-pulse sample, so use full pulse_count when any sample pulse
     # is non-noise; fall back to raw count when no details are available.
@@ -358,9 +359,12 @@ def score_otx(otx, config=None):
     pulse_tag_score = min(pulse_tag_score, 5)
     if pulse_tag_contrib:
         score += pulse_tag_score
+        raw_pulse_total = sum(pulse_tag_contrib.values())
         for tag, w in sorted(pulse_tag_contrib.items(), key=lambda x: -x[1]):
             breakdown.append(f"  Pulse tag [{tag}] → +{w}")
-        breakdown.append(f"Pulse tags (capped)          → +{pulse_tag_score}  (cap 5)")
+        if raw_pulse_total > pulse_tag_score:
+            breakdown.append(f"  Raw pulse tag total → {raw_pulse_total}  (per-pulse cap of 3 applied)")
+        breakdown.append(f"Pulse tags contribution      → +{pulse_tag_score}")
     else:
         breakdown.append(f"Pulse tags                   → +0")
 
@@ -577,17 +581,6 @@ def score_shodan(shodan, config=None):
     suspicious_ports    = config.get("suspicious_ports", {})    if config else {}
     suspicious_products = config.get("suspicious_products", {}) if config else {}
     shodan_tag_weights  = config.get("shodan_tags", {})         if config else {}
-    cdn_asns            = config.get("cdn_asns", {})            if config else {}
-    cloud_hosting_asns  = config.get("cloud_hosting_asns", {})  if config else {}
-
-    asn = (shodan.get("asn") or "").strip().upper()
-    is_cdn_asn   = asn in cdn_asns
-    is_cloud_asn = asn in cloud_hosting_asns
-
-    if is_cdn_asn:
-        breakdown.append(f"CDN ASN {asn} ({cdn_asns[asn]}) → port/hostname/product scoring skipped, verdict capped")
-    elif is_cloud_asn:
-        breakdown.append(f"Cloud hosting ASN {asn} ({cloud_hosting_asns[asn]}) → port/hostname scoring skipped")
 
     vulns      = shodan.get("vulns", [])
     vuln_count = len(vulns)
@@ -610,51 +603,45 @@ def score_shodan(shodan, config=None):
     port_score    = 0
     flagged_ports = []
 
-    if not (is_cdn_asn or is_cloud_asn):
-        for port in shodan.get("ports", []):
-            port_str = str(port)
-            if port_str in suspicious_ports:
-                weight = suspicious_ports[port_str]["weight"]
-                reason = suspicious_ports[port_str]["reason"]
-                port_score += weight
-                flagged_ports.append(f"{port} ({reason})")
+    for port in shodan.get("ports", []):
+        port_str = str(port)
+        if port_str in suspicious_ports:
+            weight = suspicious_ports[port_str]["weight"]
+            reason = suspicious_ports[port_str]["reason"]
+            port_score += weight
+            flagged_ports.append(f"{port} ({reason})")
 
-        port_score = min(port_score, 4)
-        score += port_score
+    port_score = min(port_score, 4)
+    score += port_score
 
-        if flagged_ports:
-            breakdown.append(f"Suspicious ports {len(flagged_ports):<4} → +{port_score}  (cap 4)")
-            for p in flagged_ports:
-                breakdown.append(f"  Port {p}")
-        else:
-            breakdown.append(f"Suspicious ports none → +0")
+    if flagged_ports:
+        breakdown.append(f"Suspicious ports {len(flagged_ports):<4} → +{port_score}  (cap 4)")
+        for p in flagged_ports:
+            breakdown.append(f"  Port {p}")
     else:
-        breakdown.append(f"Suspicious ports (skipped — CDN/cloud ASN) → +0")
+        breakdown.append(f"Suspicious ports none → +0")
 
     product_score    = 0
     flagged_products = []
 
-    if not is_cdn_asn:
-        for service in shodan.get("services", []):
-            product = service.get("product", "").lower()
-            if not product:
-                continue
-            for known_product, details in suspicious_products.items():
-                if known_product in product:
-                    product_score += details["weight"]
-                    flagged_products.append(f"{service['product']} on port {service['port']} ({details['reason']})")
+    for service in shodan.get("services", []):
+        product = service.get("product", "").lower()
+        if not product:
+            continue
+        for known_product, details in suspicious_products.items():
+            if known_product in product:
+                product_score += details["weight"]
+                flagged_products.append(f"{service['product']} on port {service['port']} ({details['reason']})")
 
-        product_score = min(product_score, 6)
-        score += product_score
+    product_score = min(product_score, 6)
+    score += product_score
 
-        if flagged_products:
-            breakdown.append(f"Suspicious products {len(flagged_products):<3} → +{product_score}  (cap 6)")
-            for p in flagged_products:
-                breakdown.append(f"  {p}")
-        else:
-            breakdown.append(f"Suspicious products none  → +0")
+    if flagged_products:
+        breakdown.append(f"Suspicious products {len(flagged_products):<3} → +{product_score}  (cap 6)")
+        for p in flagged_products:
+            breakdown.append(f"  {p}")
     else:
-        breakdown.append(f"Suspicious products (skipped — CDN ASN) → +0")
+        breakdown.append(f"Suspicious products none  → +0")
 
     tag_score           = 0
     flagged_tags        = []
@@ -667,8 +654,6 @@ def score_shodan(shodan, config=None):
             reason = shodan_tag_weights[tag_lower]["reason"]
             if weight >= 3:
                 has_high_weight_tag = True
-            if is_cdn_asn and weight < 3:
-                continue
             tag_score += weight
             flagged_tags.append(f"{tag} ({reason})")
 
@@ -682,15 +667,12 @@ def score_shodan(shodan, config=None):
     else:
         breakdown.append(f"Shodan tags      none → +0")
 
-    if not (is_cdn_asn or is_cloud_asn):
-        hostnames = shodan.get("hostnames", [])
-        if not hostnames:
-            score += 1
-            breakdown.append(f"No hostname                  → +1  (anonymous infrastructure)")
-        else:
-            breakdown.append(f"Hostname: {hostnames[0]:<20} → +0")
+    hostnames = shodan.get("hostnames", [])
+    if not hostnames:
+        score += 1
+        breakdown.append(f"No hostname                  → +1  (anonymous infrastructure)")
     else:
-        breakdown.append(f"Hostname check (skipped — CDN/cloud ASN) → +0")
+        breakdown.append(f"Hostname: {hostnames[0]:<20} → +0")
 
     has_data = (
         len(vulns) > 0 or
@@ -718,10 +700,304 @@ def score_shodan(shodan, config=None):
         "evidence_count": len(vulns) + len(flagged_ports) + len(flagged_products),
         "has_data":       has_data,
         "breakdown":      breakdown,
-        "gated":          is_cdn_asn or is_cloud_asn,
+        "gated":          False,
     }
-    
-    
+
+
+def score_censys(censys, config=None):
+    """Score Censys data. Returns per-source result dict.
+
+    Scoring layers (additive, capped at 15):
+      1. CVEs          — known vulnerabilities present in service scan data
+      2. Products      — offensive tools identified in service banners (skipped for CDN ASNs)
+      3. Labels        — Censys classification labels mapped to shodan_tags weights
+
+    No port-only scoring and no hostname penalty (Censys doesn't reliably expose hostnames).
+    CDN ASNs: product scoring skipped, verdict capped at medium_risk.
+    Minimum evidence threshold: a non-clean verdict requires at least one CVE, suspicious
+    product, or high-weight label (weight >= 3) — ports alone cannot raise the verdict.
+    """
+
+    if not censys:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    score     = 0
+    breakdown = []
+
+    suspicious_products = config.get("suspicious_products", {}) if config else {}
+    shodan_tag_weights  = config.get("shodan_tags", {})         if config else {}
+
+    vulns      = censys.get("vulns", [])
+    vuln_count = len(vulns)
+
+    if vuln_count >= 5:
+        score += 3
+        breakdown.append(f"CVEs found       {vuln_count:<5} → +3  (critically exposed)")
+    elif vuln_count >= 3:
+        score += 2
+        breakdown.append(f"CVEs found       {vuln_count:<5} → +2  (multiple vulnerabilities)")
+    elif vuln_count >= 1:
+        score += 1
+        breakdown.append(f"CVEs found       {vuln_count:<5} → +1  (vulnerable)")
+    else:
+        breakdown.append(f"CVEs found       {vuln_count:<5} → +0")
+
+    if vulns:
+        breakdown.append(f"  CVEs: {', '.join(vulns[:5])}")
+
+    product_score    = 0
+    flagged_products = []
+
+    for service in censys.get("services", []):
+        product = (service.get("product") or "").lower()
+        if not product:
+            continue
+        for known_product, details in suspicious_products.items():
+            if known_product in product:
+                product_score += details["weight"]
+                flagged_products.append(f"{service['product']} on port {service['port']} ({details['reason']})")
+
+    product_score = min(product_score, 6)
+    score += product_score
+
+    if flagged_products:
+        breakdown.append(f"Suspicious products {len(flagged_products):<3} → +{product_score}  (cap 6)")
+        for p in flagged_products:
+            breakdown.append(f"  {p}")
+    else:
+        breakdown.append(f"Suspicious products none  → +0")
+
+    tag_score           = 0
+    flagged_labels      = []
+    has_high_weight_tag = False
+
+    for label in censys.get("labels", []):
+        label_lower = label.lower()
+        if label_lower in shodan_tag_weights:
+            weight = shodan_tag_weights[label_lower]["weight"]
+            reason = shodan_tag_weights[label_lower]["reason"]
+            if weight >= 3:
+                has_high_weight_tag = True
+            tag_score += weight
+            flagged_labels.append(f"{label} ({reason})")
+
+    tag_score = min(tag_score, 5)
+    score += tag_score
+
+    if flagged_labels:
+        breakdown.append(f"Censys labels    {len(flagged_labels):<4} → +{tag_score}  (cap 5)")
+        for lbl in flagged_labels:
+            breakdown.append(f"  Label: {lbl}")
+    else:
+        breakdown.append(f"Censys labels    none → +0")
+
+    has_data = (
+        len(vulns) > 0 or
+        len(flagged_products) > 0 or
+        len(flagged_labels) > 0 or
+        len(censys.get("ports", [])) > 0
+    )
+
+    score = min(score, 15)
+
+    meets_min_threshold = (
+        vuln_count > 0 or
+        product_score > 0 or
+        has_high_weight_tag or
+        tag_score >= 3
+    )
+
+    if has_data and meets_min_threshold:
+        verdict = score_to_verdict(score)
+    elif has_data:
+        verdict = "clean"
+    else:
+        verdict = "no_data"
+
+    return {
+        "verdict":        verdict,
+        "score":          score,
+        "evidence_count": len(vulns) + len(flagged_products) + len(flagged_labels),
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+        "gated":          False,
+    }
+
+
+def score_shodan_censys(shodan, censys, config):
+    """Confidence layer — Shodan + Censys cross-source corroboration.
+
+    Seven flat signals (+1 or +2 each) answer "do two independent scanners
+    agree?" rather than "how many items agree?". Total is capped at +4 so
+    this layer nudges verdicts rather than manufacturing them.
+    """
+
+    empty = {
+        "port_bonus":            0,
+        "cve_bonus":             0,
+        "product_bonus":         0,
+        "banner_bonus":          0,
+        "cert_bonus":            0,
+        "service_overlap_bonus": 0,
+        "recency_bonus":         0,
+        "total_bonus":           0,
+        "corroborated_ports":    [],
+        "corroborated_cves":     [],
+        "corroborated_products": [],
+        "corroborated_banners":  [],
+        "cert_match":            False,
+        "service_overlap_pct":   0,
+    }
+
+    if not isinstance(shodan, dict) or not isinstance(censys, dict):
+        return empty
+
+    suspicious_ports    = config.get("suspicious_ports", {})    if config else {}
+    suspicious_products = config.get("suspicious_products", {}) if config else {}
+
+    # Signal 1 — Suspicious port corroboration (flat +1)
+    # A port only qualifies if both scanners see it AND it's suspicious AND
+    # either source has a suspicious product on that port OR the port weight >= 3.
+    ports_shodan = {int(p) for p in shodan.get("ports", []) if str(p).isdigit()}
+    ports_censys = {int(p) for p in censys.get("ports", []) if str(p).isdigit()}
+    agreed_ports = ports_shodan & ports_censys
+
+    corroborated_ports = []
+    for port in agreed_ports:
+        port_str = str(port)
+        if port_str not in suspicious_ports:
+            continue
+        port_weight = suspicious_ports[port_str].get("weight", 0)
+
+        all_products_on_port = [
+            (svc.get("product") or "").lower()
+            for src in (shodan, censys)
+            for svc in src.get("services", [])
+            if svc.get("port") == port
+        ]
+        either_has_suspicious_product = any(
+            known in prod
+            for prod in all_products_on_port
+            for known in suspicious_products
+            if prod
+        )
+        if either_has_suspicious_product or port_weight >= 3:
+            corroborated_ports.append(port_str)
+
+    port_bonus = 1 if corroborated_ports else 0
+
+    # Signal 2 — CVE corroboration (flat +1)
+    shodan_cves       = set(shodan.get("vulns", []))
+    censys_cves       = set(censys.get("vulns", []))
+    shared_cves       = shodan_cves & censys_cves
+    corroborated_cves = sorted(shared_cves)
+    cve_bonus         = 1 if shared_cves else 0
+
+    # Signal 3 — Suspicious product corroboration (flat +1)
+    corroborated_products = []
+    for key in suspicious_products:
+        shodan_has = any(
+            key in (svc.get("product") or "").lower()
+            for svc in shodan.get("services", [])
+        )
+        censys_has = any(
+            key in (svc.get("product") or "").lower()
+            for svc in censys.get("services", [])
+        )
+        if shodan_has and censys_has:
+            corroborated_products.append(key)
+    product_bonus = 1 if corroborated_products else 0
+
+    # Signal 4 — Banner/version corroboration (flat +1)
+    # Exact product+version match on the same port, OR suspicious product match.
+    corroborated_banners = []
+    for s_svc in shodan.get("services", []):
+        s_product = (s_svc.get("product") or "").lower().strip()
+        s_version = (s_svc.get("version") or "").lower().strip()
+        if not s_product or s_product == "unknown":
+            continue
+        s_port = s_svc.get("port")
+        for c_svc in censys.get("services", []):
+            if c_svc.get("port") != s_port:
+                continue
+            c_product = (c_svc.get("product") or "").lower().strip()
+            c_version = (c_svc.get("version") or "").lower().strip()
+            product_match  = s_product == c_product and c_product != ""
+            version_match  = s_version == c_version and s_version != "" and c_version != ""
+            is_suspicious  = any(known in s_product for known in suspicious_products)
+            if (product_match and version_match) or (product_match and is_suspicious):
+                banner = f"{s_product} {s_version}".strip()
+                if banner not in corroborated_banners:
+                    corroborated_banners.append(banner)
+    banner_bonus = 1 if corroborated_banners else 0
+
+    # Signal 5 — TLS certificate fingerprint match (flat +2)
+    # Certificates are cryptographically unique, so a match is very high-confidence.
+    shodan_cert  = shodan.get("ssl_sha256") or None
+    censys_fps   = [
+        c.get("fingerprint", "").lower()
+        for c in censys.get("certificates", [])
+        if c.get("fingerprint")
+    ]
+    cert_match   = shodan_cert is not None and shodan_cert.lower() in censys_fps
+    cert_bonus   = 2 if cert_match else 0
+
+    # Signal 6 — Service overlap (flat +1, requires >= 3 ports on each side)
+    # Common web/infra ports excluded so routine overlap doesn't score.
+    COMMON_PORTS          = {80, 443, 22, 21, 25, 53, 8080, 8443}
+    ports_s_filt          = ports_shodan - COMMON_PORTS
+    ports_c_filt          = ports_censys - COMMON_PORTS
+    service_overlap_bonus = 0
+    service_overlap_pct   = 0
+    if len(ports_shodan) >= 3 and len(ports_censys) >= 3:
+        union = ports_s_filt | ports_c_filt
+        if union:
+            overlap_ratio       = len(ports_s_filt & ports_c_filt) / len(union)
+            service_overlap_pct = round(overlap_ratio * 100, 1)
+            if overlap_ratio >= 0.70:
+                service_overlap_bonus = 1
+
+    # Signal 7 — Recency corroboration (flat +1, both must be scanned within 7 days)
+    recency_bonus = 0
+    try:
+        shodan_dt   = datetime.datetime.fromisoformat(
+            shodan.get("last_update", "").replace("Z", "")[:19]
+        )
+        censys_dt   = datetime.datetime.fromisoformat(
+            censys.get("last_update", "").replace("Z", "")[:19]
+        )
+        now = datetime.datetime.now()
+        if (now - shodan_dt).days <= 7 and (now - censys_dt).days <= 7:
+            recency_bonus = 1
+    except (ValueError, TypeError, AttributeError):
+        pass
+
+    total_bonus = min(
+        port_bonus + cve_bonus + product_bonus +
+        banner_bonus + cert_bonus +
+        service_overlap_bonus + recency_bonus,
+        4,
+    )
+
+    return {
+        "port_bonus":            port_bonus,
+        "cve_bonus":             cve_bonus,
+        "product_bonus":         product_bonus,
+        "banner_bonus":          banner_bonus,
+        "cert_bonus":            cert_bonus,
+        "service_overlap_bonus": service_overlap_bonus,
+        "recency_bonus":         recency_bonus,
+        "total_bonus":           total_bonus,
+        "corroborated_ports":    corroborated_ports,
+        "corroborated_cves":     corroborated_cves,
+        "corroborated_products": corroborated_products,
+        "corroborated_banners":  corroborated_banners,
+        "cert_match":            cert_match,
+        "service_overlap_pct":   service_overlap_pct,
+    }
+
+
 def score_whois(whois, config=None):
     if not whois:
         return {"verdict": "no_data", "score": 0,
@@ -786,32 +1062,274 @@ def score_whois(whois, config=None):
     }
 
 
-def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, config=None):
+def score_greynoise(greynoise, config=None):
+    if not greynoise:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": [], "is_noise": False}
+
+    classification = greynoise.get("classification")
+    actor          = greynoise.get("actor")
+    cve            = greynoise.get("cve")
+    breakdown      = []
+
+    if classification == "benign":
+        breakdown.append(f"Classification: benign        → score 0  (internet scanner/noise)")
+        return {
+            "verdict":        "clean",
+            "score":          0,
+            "evidence_count": 0,
+            "has_data":       True,
+            "breakdown":      breakdown,
+            "is_noise":       True,
+        }
+
+    score = 0
+
+    if classification == "malicious":
+        score += 3
+        breakdown.append(f"Classification: malicious     → +3")
+    elif classification == "suspicious":
+        score += 2
+        breakdown.append(f"Classification: suspicious    → +2")
+    else:
+        breakdown.append(f"Classification: {classification or 'unknown':<14} → +0")
+
+    if actor:
+        score += 2
+        breakdown.append(f"Actor: {actor:<25} → +2")
+    else:
+        breakdown.append(f"Actor: none                  → +0")
+
+    if cve:
+        score += 1
+        breakdown.append(f"CVE present                  → +1")
+    else:
+        breakdown.append(f"CVE present                  → +0")
+
+    score    = min(score, 6)
+    has_data = classification is not None
+
+    return {
+        "verdict":        score_to_verdict(score) if has_data else "no_data",
+        "score":          score,
+        "evidence_count": 1 if classification == "malicious" else 0,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+        "is_noise":       False,
+    }
+
+
+def score_urlhaus(urlhaus, config=None):
+    if not urlhaus:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    score     = 0
+    breakdown = []
+    url_count = urlhaus.get("url_count", 0)
+    threat    = urlhaus.get("threat") or ""
+
+    if url_count >= 5:
+        score += 3
+        breakdown.append(f"URL count {url_count:<6}           → +3")
+    elif url_count >= 2:
+        score += 2
+        breakdown.append(f"URL count {url_count:<6}           → +2")
+    elif url_count == 1:
+        score += 1
+        breakdown.append(f"URL count {url_count:<6}           → +1")
+    else:
+        breakdown.append(f"URL count {url_count:<6}           → +0")
+
+    if any(t in threat.lower() for t in ["ransomware", "trojan", "banker"]):
+        score += 3
+        breakdown.append(f"Threat: {threat:<22} → +3  (high severity)")
+    elif any(t in threat.lower() for t in ["malware", "dropper"]):
+        score += 2
+        breakdown.append(f"Threat: {threat:<22} → +2  (malware)")
+    elif threat:
+        breakdown.append(f"Threat: {threat:<22} → +0")
+    else:
+        breakdown.append(f"Threat: none                 → +0")
+
+    score    = min(score, 8)
+    has_data = url_count > 0
+
+    return {
+        "verdict":        score_to_verdict(score) if has_data else "no_data",
+        "score":          score,
+        "evidence_count": url_count,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+    }
+
+
+def score_hybrid(hybrid, config=None):
+    if not hybrid:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    score        = 0
+    breakdown    = []
+    threat_score = hybrid.get("threat_score")
+    family       = hybrid.get("family") or []
+
+    if threat_score is not None:
+        if threat_score >= 80:
+            score += 5
+            breakdown.append(f"Threat score {threat_score:<5}        → +5")
+        elif threat_score >= 60:
+            score += 4
+            breakdown.append(f"Threat score {threat_score:<5}        → +4")
+        elif threat_score >= 40:
+            score += 3
+            breakdown.append(f"Threat score {threat_score:<5}        → +3")
+        elif threat_score >= 20:
+            score += 2
+            breakdown.append(f"Threat score {threat_score:<5}        → +2")
+        else:
+            breakdown.append(f"Threat score {threat_score:<5}        → +0")
+    else:
+        verdict_val = hybrid.get("verdict", "")
+        if verdict_val == "malicious":
+            score += 3
+            breakdown.append(f"Verdict: malicious           → +3  (no threat score available)")
+        elif verdict_val == "suspicious":
+            score += 1
+            breakdown.append(f"Verdict: suspicious          → +1  (no threat score available)")
+        else:
+            breakdown.append(f"Threat score N/A             → +0")
+
+    if family:
+        score += 1
+        breakdown.append(f"Families: {', '.join(family):<21} → +1")
+    else:
+        breakdown.append(f"Families: none               → +0")
+
+    score    = min(score, 6)
+    has_data = threat_score is not None or hybrid.get("verdict") is not None
+
+    return {
+        "verdict":        score_to_verdict(score) if has_data else "no_data",
+        "score":          score,
+        "evidence_count": 1 if (threat_score or 0) >= 20 else 0,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+    }
+
+
+def score_urlscan(urlscan, config=None):
+    if not urlscan:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    score      = 0
+    breakdown  = []
+    malicious  = urlscan.get("malicious", False)
+    categories = urlscan.get("categories") or []
+
+    if malicious:
+        score += 3
+        breakdown.append(f"Malicious verdict            → +3")
+    else:
+        breakdown.append(f"Malicious verdict            → +0")
+
+    cat_score = min(len(categories), 2)
+    score += cat_score
+    if categories:
+        breakdown.append(f"Categories: {', '.join(categories[:3]):<21} → +{cat_score}  (cap +2)")
+    else:
+        breakdown.append(f"Categories: none             → +0")
+
+    phishing_keywords = [
+        "auth", "login", "verify", "secure", "account", "recovery",
+        "member", "update", "confirm", "banking", "wallet", "signin",
+        "portal", "access", "gateway", "support", "helpdesk",
+    ]
+    domain_score = 0
+    flagged_domains = []
+    for d in (urlscan.get("domains") or []):
+        if any(kw in d.lower() for kw in phishing_keywords):
+            domain_score += 2
+            flagged_domains.append(d)
+    domain_score = min(domain_score, 4)
+    score += domain_score
+    if flagged_domains:
+        breakdown.append(f"Phishing domains [{', '.join(flagged_domains[:3])}] → +{domain_score}  (cap +4)")
+    else:
+        breakdown.append(f"Phishing domains             → +0")
+
+    has_data = (
+        malicious or
+        len(categories) > 0 or
+        len(urlscan.get("domains") or []) > 0 or
+        urlscan.get("page_title") is not None or
+        urlscan.get("ip") is not None
+    )
+
+    return {
+        "verdict":        score_to_verdict(score) if has_data else "no_data",
+        "score":          score,
+        "evidence_count": 1 if malicious else 0,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+    }
+
+
+def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
+                     censys=None, greynoise=None, urlhaus=None, hybrid=None,
+                     urlscan=None, config=None):
     """Combine per-source scores into a single final verdict using a plain average.
 
     Gated sources (CDN/cloud ASNs with score==0) are excluded from the average.
     One override rule applies: if any source returns High, the final verdict is raised
-    to at least Medium risk.
+    to at least Medium risk. A Shodan+Censys corroboration bonus is added on top.
     """
 
     if config is None:
         config = load_config()
 
-    vt_result    = score_vt(vt, config)
-    otx_result   = score_otx(otx, config=config)
-    _abuse_asn = (shodan.get("asn") or "").strip().upper() if isinstance(shodan, dict) else None
+    vt_result     = score_vt(vt, config)
+    otx_result    = score_otx(otx, config=config)
+    _abuse_asn    = (shodan.get("asn") or "").strip().upper() if isinstance(shodan, dict) else None
     abuse_result  = score_abuse(abuse, config=config, asn=_abuse_asn or None)
     shodan_result = score_shodan(shodan, config=config)
-    whois_result  = score_whois(whois, config)
+    censys_result = score_censys(censys, config=config)
+    whois_result     = score_whois(whois, config)
+    greynoise_result = score_greynoise(greynoise, config)
+    urlhaus_result   = score_urlhaus(urlhaus, config)
+    hybrid_result    = score_hybrid(hybrid, config)
+    urlscan_result   = score_urlscan(urlscan, config)
     sources = {
         "VirusTotal": vt_result,
         "OTX":        otx_result,
         "AbuseIPDB":  abuse_result,
         "Shodan":     shodan_result,
+        "Censys":     censys_result,
+        "GreyNoise":  greynoise_result,
+        "URLhaus":    urlhaus_result,
+        "Hybrid":     hybrid_result,
+        "URLScan":    urlscan_result,
     }
 
-    # Only include sources that returned real data so no-data sources don't drag the verdict down
-    active = {name: r for name, r in sources.items() if r["has_data"]}
+    # Only include sources that returned real data so no-data sources don't drag the verdict down.
+    # GreyNoise benign (is_noise=True) is excluded from the score sum but kept in per_source as context.
+    active = {
+        name: r for name, r in sources.items()
+        if r["has_data"] and not (name == "GreyNoise" and r.get("is_noise"))
+    }
+
+    cdn_asns     = config.get("cdn_asns", {})
+    cloud_asns   = config.get("cloud_hosting_asns", {})
+    trusted_asns = set(cdn_asns.keys()) | set(cloud_asns.keys())
+
+    detected_asn = ""
+    if isinstance(shodan, dict):
+        detected_asn = (shodan.get("asn") or "").strip().upper()
+    if not detected_asn and isinstance(censys, dict):
+        detected_asn = (censys.get("asn") or "").strip().upper()
+
+    is_trusted_asn = detected_asn in trusted_asns
 
     if not active:
         return {
@@ -832,6 +1350,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, con
                     "score":           r["score"],
                     "evidence_count":  r["evidence_count"],
                     "has_data":        r["has_data"],
+                    **( {"is_noise": True} if r.get("is_noise") else {} ),
                 }
                 for name, r in sources.items()
             },
@@ -842,14 +1361,18 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, con
                 "verdict":        whois_result.get("verdict", "no_data"),
                 "breakdown":      whois_result.get("breakdown", []),
             },
+            "shodan_censys_corroboration": {
+                "port_bonus": 0, "cve_bonus": 0, "product_bonus": 0,
+                "banner_bonus": 0, "cert_bonus": 0, "service_overlap_bonus": 0,
+                "recency_bonus": 0, "total_bonus": 0,
+                "corroborated_ports": [], "corroborated_cves": [],
+                "corroborated_products": [], "corroborated_banners": [],
+                "cert_match": False, "service_overlap_pct": 0,
+            },
         }
 
-    avg_active = {
-        name: r for name, r in active.items()
-        if not (r.get("gated") and r["score"] == 0)
-    }
-    if avg_active:
-        final_score = sum(r["score"] for r in avg_active.values()) / len(avg_active)
+    if active:
+        final_score = min(sum(r["score"] for r in active.values()), 20)
     else:
         final_score = 0
     final_verdict = score_to_verdict(final_score)
@@ -868,10 +1391,33 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, con
             whois_modifier = min(whois_result["score"], 1)
         else:
             whois_modifier = min(whois_result["score"], 2)
-        final_score += whois_modifier
+        final_score = min(final_score + whois_modifier, 20)
 
     # Recompute verdict after modifier
     final_verdict = score_to_verdict(final_score)
+
+    # Cross-source corroboration bonus (Shodan + Censys)
+    corroboration = score_shodan_censys(shodan, censys, config)
+    corr_bonus    = corroboration["total_bonus"]
+    if corr_bonus > 0:
+        final_score  = min(final_score + corr_bonus, 20)
+        final_verdict = score_to_verdict(final_score)
+
+    vt_country      = (vt or {}).get("country", "")
+    censys_country  = (censys or {}).get("country", "") if isinstance(censys, dict) else ""
+    shodan_country  = (shodan or {}).get("country", "") if isinstance(shodan, dict) else ""
+    geo_countries   = {c.upper() for c in [vt_country, censys_country, shodan_country] if c}
+    geo_mismatch    = len(geo_countries) > 1
+
+    # Rule 1: trusted ASN caps verdict at medium_risk
+    if is_trusted_asn and VERDICT_ORDER.get(final_verdict, 0) > VERDICT_ORDER["medium_risk"]:
+        final_verdict = "medium_risk"
+
+    # Rule 2: High verdict requires at least 2 active sources with score >= 5
+    if final_verdict == "high":
+        strong_sources = [r for r in active.values() if r["score"] >= 5]
+        if len(strong_sources) < 2:
+            final_verdict = "medium_risk"
 
     for name, r in active.items():
         if r["verdict"] == "high":
@@ -906,8 +1452,26 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, con
         full_breakdown.append(f"── WHOIS ──")
         full_breakdown.extend(whois_result["breakdown"])
 
+    if corr_bonus > 0:
+        full_breakdown.append(f"── Shodan+Censys Corroboration ──")
+        if corroboration["corroborated_ports"]:
+            full_breakdown.append(f"Ports confirmed: {', '.join(corroboration['corroborated_ports'])} → +{corroboration['port_bonus']}")
+        if corroboration["corroborated_cves"]:
+            full_breakdown.append(f"CVEs confirmed: {', '.join(corroboration['corroborated_cves'])} → +{corroboration['cve_bonus']}")
+        if corroboration["corroborated_products"]:
+            full_breakdown.append(f"Products confirmed: {', '.join(corroboration['corroborated_products'])} → +{corroboration['product_bonus']}")
+        if corroboration["corroborated_banners"]:
+            full_breakdown.append(f"Banners confirmed: {', '.join(corroboration['corroborated_banners'])} → +{corroboration['banner_bonus']}")
+        if corroboration.get("cert_match"):
+            full_breakdown.append(f"TLS cert fingerprint match → +{corroboration['cert_bonus']}")
+        if corroboration.get("service_overlap_bonus", 0) > 0:
+            full_breakdown.append(f"Service overlap {corroboration.get('service_overlap_pct', 0)}% → +{corroboration['service_overlap_bonus']}")
+        if corroboration.get("recency_bonus", 0) > 0:
+            full_breakdown.append(f"Both scanned within 7 days → +{corroboration['recency_bonus']}")
+        full_breakdown.append(f"Corroboration total (cap 4) → +{corr_bonus}")
+
     raw_total     = sum(r["score"] for r in active.values())
-    display_score = round(raw_total / len(active), 1) if active else 0
+    display_score = int(min(raw_total, 20))
     contribution  = {}
     for name, r in sources.items():
         if not r["has_data"]:
@@ -936,6 +1500,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, con
                 "score":           r["score"],
                 "evidence_count":  r["evidence_count"],
                 "has_data":        r["has_data"],
+                **( {"is_noise": True} if r.get("is_noise") else {} ),
             }
             for name, r in sources.items()
         },
@@ -946,4 +1511,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None, con
             "verdict":        whois_result.get("verdict", "no_data"),
             "breakdown":      whois_result.get("breakdown", []),
         },
+        "shodan_censys_corroboration": corroboration,
+        "geo_mismatch":               geo_mismatch,
+        "geo_countries":              sorted(geo_countries),
     }

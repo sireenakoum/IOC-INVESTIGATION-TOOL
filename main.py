@@ -6,6 +6,11 @@ from sources.otx import otx_check
 from sources.shodan import shodan_check
 from sources.abuseipdb import abuseipdb_check
 from sources.whois import whois_check
+from sources.censys import censys_check
+from sources.greynoise import greynoise_check
+from sources.urlhaus import urlhaus_check
+from sources.urlscan import urlscan_check
+from sources.hybrid import hybrid_check
 from sources.scoring import combined_verdict, load_config, resolve_vendor, VERDICT_DISPLAY
 from cache import clear_cache, clear_indicator_cache
 from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator, get_last_result, compare_results
@@ -15,9 +20,12 @@ config = load_config("config.json")
 VERBOSE = False
 
 
-def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None):
+def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None, censys=None,
+                   greynoise=None, urlhaus=None, urlscan=None, hybrid=None):
 
-    verdict_result = combined_verdict(vt, otx, abuse, shodan, whois=whois, config=config)
+    verdict_result = combined_verdict(vt, otx, abuse, shodan, whois=whois, censys=censys,
+                                      greynoise=greynoise, urlhaus=urlhaus,
+                                      urlscan=urlscan, hybrid=hybrid, config=config)
 
     if not VERBOSE:
         print(f"\n{'='*45}")
@@ -78,17 +86,20 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
         # Shodan summary line
         if shodan:
             org = shodan.get('org') or 'Unknown'
-            asn = (shodan.get('asn') or '').strip().upper()
-            if asn in config.get('cdn_asns', {}):
-                print(f"  [Shodan]        {org} (CDN — port/hostname/product scoring skipped)")
-            elif asn in config.get('cloud_hosting_asns', {}):
-                print(f"  [Shodan]        {org} (cloud hosting — port/hostname scoring skipped)")
-            else:
-                ports     = shodan.get('ports', [])
-                ports_str = ', '.join(str(p) for p in ports) if ports else "no suspicious findings"
-                print(f"  [Shodan]        {org} — {ports_str}")
+            ports     = shodan.get('ports', [])
+            ports_str = ', '.join(str(p) for p in ports) if ports else "no suspicious findings"
+            print(f"  [Shodan]        {org} — {ports_str}")
         else:
             print(f"  [Shodan]        no data")
+
+        # Censys summary line
+        if censys:
+            c_org = censys.get('org') or 'Unknown'
+            c_cve_count = len(censys.get('vulns', []))
+            cve_str = f"{c_cve_count} CVE(s)" if c_cve_count > 0 else "no CVEs"
+            print(f"  [Censys]        {c_org} — {cve_str}")
+        else:
+            print(f"  [Censys]        no data")
 
         # WHOIS summary line
         if whois:
@@ -99,12 +110,62 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
         else:
             print(f"  [WHOIS]         no data")
 
+        if greynoise:
+            classification = greynoise.get('classification', 'unknown')
+            noise = greynoise.get('noise', False)
+            if noise:
+                print(f"  [GreyNoise]     🌐 Internet background noise ({classification})")
+            else:
+                print(f"  [GreyNoise]     {classification}")
+        else:
+            print(f"  [GreyNoise]     no data")
+
+        if urlhaus:
+            url_count = urlhaus.get('url_count', 0)
+            threat = urlhaus.get('threat') or 'unknown threat'
+            print(f"  [URLhaus]       {url_count} malicious URL(s) — {threat}")
+        else:
+            print(f"  [URLhaus]       no data")
+
+        if urlscan:
+            malicious = urlscan.get('malicious', False)
+            flag = '⚠️  malicious' if malicious else 'clean'
+            print(f"  [URLScan]       {flag}")
+        else:
+            print(f"  [URLScan]       no data")
+
+        if hybrid:
+            threat_score = hybrid.get('threat_score', 0)
+            verdict = hybrid.get('verdict', 'unknown')
+            print(f"  [Hybrid]        threat score {threat_score} — {verdict}")
+        else:
+            print(f"  [Hybrid]        no data")
+
         print(f"\n  Verdict        : {verdict_result['final_verdict_display']}")
         print(f"  Recommendation : {verdict_result['recommendation']}")
         print(f"  Triggered by   : {', '.join(verdict_result['triggered_by'])}")
         _whois_ctx = verdict_result.get('whois_context', {})
         if _whois_ctx.get('has_data'):
             print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
+        _corr = verdict_result.get('shodan_censys_corroboration', {})
+        _corr_total = _corr.get('total_bonus', 0)
+        if _corr_total > 0:
+            _parts = []
+            if _corr.get('corroborated_ports'):
+                _parts.append(f"{len(_corr['corroborated_ports'])} port(s)")
+            if _corr.get('corroborated_cves'):
+                _parts.append(f"{len(_corr['corroborated_cves'])} CVE(s)")
+            if _corr.get('corroborated_products'):
+                _parts.append(f"{len(_corr['corroborated_products'])} product(s)")
+            if _corr.get('corroborated_banners'):
+                _parts.append(f"{len(_corr['corroborated_banners'])} banner(s)")
+            if _corr.get('cert_match'):
+                _parts.append("TLS cert")
+            if _corr.get('service_overlap_bonus', 0) > 0:
+                _parts.append(f"service overlap ({_corr.get('service_overlap_pct', 0)}%)")
+            if _corr.get('recency_bonus', 0) > 0:
+                _parts.append("both recent")
+            print(f"  Corroboration  : {', '.join(_parts)} confirmed across Shodan+Censys (+{_corr_total})")
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
         print(f"{'='*45}\n")
 
@@ -256,6 +317,32 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
                     label   = f"{product} {version}".strip()
                     print(f"    Port {svc['port']:<6} {svc['transport']:<4} {label}")
 
+        if censys:
+            print(f"\n  [Censys]")
+            print(f"  Org          : {censys.get('org') or 'Unknown'}")
+            print(f"  ASN          : {censys.get('asn') or 'Unknown'}")
+            print(f"  Country      : {censys.get('country') or 'Unknown'}")
+            print(f"  Last scan    : {censys['last_update'][:10] if censys.get('last_update') else 'Unknown'}")
+
+            if censys.get('ports'):
+                print(f"  Open ports   : {', '.join(str(p) for p in censys['ports'])}")
+
+            if censys.get('labels'):
+                print(f"  Labels       : {', '.join(censys['labels'])}")
+
+            if censys.get('vulns'):
+                print(f"\n  CVEs ({len(censys['vulns'])} found):")
+                for cve in censys['vulns'][:5]:
+                    print(f"    {cve}")
+
+            if censys.get('services'):
+                print(f"\n  Services:")
+                for svc in censys['services']:
+                    product = svc.get('product') or 'Unknown'
+                    version = svc.get('version') or ''
+                    label   = f"{product} {version}".strip()
+                    print(f"    Port {svc['port']:<6} {svc['transport']:<4} {label}")
+
         if whois:
             print(f"\n  [WHOIS]")
             print(f"  Domain         : {whois.get('domain') or 'N/A'}")
@@ -271,6 +358,51 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
             ns = whois.get('name_servers', [])
             print(f"  Name servers   : {', '.join(ns[:3]) if ns else 'N/A'}")
 
+        if greynoise:
+            print(f"\n  [GreyNoise]")
+            print(f"  Classification : {greynoise.get('classification', 'unknown')}")
+            print(f"  Noise          : {'Yes' if greynoise.get('noise') else 'No'}")
+            if greynoise.get('actor'):
+                print(f"  Actor          : {greynoise['actor']}")
+            if greynoise.get('cve'):
+                print(f"  CVEs           : {greynoise['cve']}")
+
+        if urlhaus:
+            print(f"\n  [URLhaus]")
+            print(f"  URL count      : {urlhaus.get('url_count', 0)}")
+            if urlhaus.get('threat'):
+                print(f"  Threat type    : {urlhaus['threat']}")
+            if urlhaus.get('first_seen'):
+                print(f"  First seen     : {urlhaus['first_seen'][:10]}")
+            urls = urlhaus.get('urls', [])
+            if urls:
+                print(f"\n  Recent URLs:")
+                for u in urls[:3]:
+                    print(f"    [{u.get('url_status', '?')}] {u.get('url', '')[:70]}")
+
+        if urlscan:
+            print(f"\n  [URLScan]")
+            print(f"  Malicious      : {'Yes' if urlscan.get('malicious') else 'No'}")
+            if urlscan.get('categories'):
+                print(f"  Categories     : {', '.join(urlscan['categories'][:5])}")
+            if urlscan.get('page_title'):
+                print(f"  Page title     : {urlscan['page_title'][:60]}")
+            if urlscan.get('server'):
+                print(f"  Server         : {urlscan['server']}")
+            if urlscan.get("domains"):
+                print(f"  Hosted domains : {', '.join(urlscan['domains'][:5])}")
+            if urlscan.get('ip'):
+                print(f"  Resolved IP    : {urlscan['ip']}")
+
+        if hybrid:
+            print(f"\n  [Hybrid Analysis]")
+            print(f"  Threat score   : {hybrid.get('threat_score', 'N/A')}")
+            print(f"  Verdict        : {hybrid.get('verdict', 'unknown')}")
+            if hybrid.get('type'):
+                print(f"  File type      : {hybrid['type']}")
+            if hybrid.get('family'):
+                print(f"  Families       : {', '.join(hybrid['family'])}")
+
         print(f"\n  Per Source:")
         for name, s in verdict_result['per_source'].items():
             print(f"    {name:<12}: {s['verdict_display']}  (evidence: {s['evidence_count']})")
@@ -284,13 +416,31 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None)
         for name, pct in verdict_result['contribution'].items():
             print(f"    {name:<12}: {pct}")
 
-        print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (avg score: {verdict_result['score']})")
+        print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (score: {verdict_result['score']})")
         print(f"  Recommendation : {verdict_result['recommendation']}")
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
         print(f"  Triggered      : {', '.join(verdict_result['triggered_by'])}")
         _whois_ctx = verdict_result.get('whois_context', {})
         if _whois_ctx.get('has_data'):
             print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
+        _corr = verdict_result.get('shodan_censys_corroboration', {})
+        _corr_total = _corr.get('total_bonus', 0)
+        if _corr_total > 0:
+            print(f"\n  [Corroboration] Shodan + Censys (+{_corr_total} total, cap 4)")
+            if _corr.get('corroborated_ports'):
+                print(f"  Ports    : {', '.join(_corr['corroborated_ports'])} (+{_corr['port_bonus']})")
+            if _corr.get('corroborated_cves'):
+                print(f"  CVEs     : {', '.join(_corr['corroborated_cves'])} (+{_corr['cve_bonus']})")
+            if _corr.get('corroborated_products'):
+                print(f"  Products : {', '.join(_corr['corroborated_products'])} (+{_corr['product_bonus']})")
+            if _corr.get('corroborated_banners'):
+                print(f"  Banners  : {', '.join(_corr['corroborated_banners'])} (+{_corr['banner_bonus']})")
+            if _corr.get('cert_match'):
+                print(f"  TLS cert : fingerprint match across both sources (+{_corr['cert_bonus']})")
+            if _corr.get('service_overlap_bonus', 0) > 0:
+                print(f"  Overlap  : {_corr.get('service_overlap_pct', 0)}% non-common port overlap (+{_corr['service_overlap_bonus']})")
+            if _corr.get('recency_bonus', 0) > 0:
+                print(f"  Recency  : both scanned within 7 days (+{_corr['recency_bonus']})")
         print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
         if verdict_result['inactive_sources']:
             print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
@@ -333,10 +483,19 @@ def check_indicator(indicator, previous=None):
     abuse  = abuseipdb_check(indicator, ind_type)
     shodan = shodan_check(indicator, ind_type)
     whois  = whois_check(indicator, ind_type)
+    censys = censys_check(indicator, ind_type)
+    greynoise = greynoise_check(indicator, ind_type)
+    urlhaus   = urlhaus_check(indicator, ind_type)
+    urlscan   = urlscan_check(indicator, ind_type)
+    hybrid    = hybrid_check(indicator, ind_type)
 
-    verdict_result = display_report(indicator, ind_type, vt, otx, abuse, shodan, whois)
+    verdict_result = display_report(indicator, ind_type, vt, otx, abuse, shodan, whois, censys,
+                                    greynoise=greynoise, urlhaus=urlhaus,
+                                    urlscan=urlscan, hybrid=hybrid)
     save_results(indicator, vt, otx, abuse, shodan, verdict_result["final_verdict"], whois,
-                 score=verdict_result["score"], per_source=verdict_result["per_source"])
+                 score=verdict_result["score"], per_source=verdict_result["per_source"],
+                 censys_result=censys, greynoise_result=greynoise, urlhaus_result=urlhaus,
+                 urlscan_result=urlscan, hybrid_result=hybrid)
 
     if old_entry is not None:
         new_cmp = {
@@ -410,7 +569,10 @@ while True:
             else:
                 ind_type = detect_type(entry["indicator"])
                 print(f"  (Cached result from {entry['timestamp']})")
-                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], entry["abuse"], entry["shodan"], entry.get("whois"))
+                display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], entry["abuse"],
+                               entry["shodan"], entry.get("whois"), entry.get("censys"),
+                               greynoise=entry.get("greynoise"), urlhaus=entry.get("urlhaus"),
+                               urlscan=entry.get("urlscan"), hybrid=entry.get("hybrid"))
         else:
             print("  Usage: history  or  history <number>  or  history clear")
         continue

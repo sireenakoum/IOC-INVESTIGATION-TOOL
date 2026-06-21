@@ -38,7 +38,7 @@ def shodan_check(indicator,ind_type):
         print("[Shodan] Rate limit hit")
         return None
     if response.status_code!=200:
-        print(f"[Shodan] Error {response.status_code}")
+        print(f"[Shodan] Error {response.status_code}: {response.text[:200]}")
         return None
     
     data=response.json()
@@ -56,6 +56,7 @@ def shodan_check(indicator,ind_type):
     ports      = data.get("ports", [])
     tags       = data.get("tags", [])
     
+    ssl_sha256 = None
     services=[]
     for banner in data.get("data",[]):
         service={
@@ -64,15 +65,22 @@ def shodan_check(indicator,ind_type):
             "product": banner.get("product",""),
             "version": banner.get("version",""),
             "cpe":banner.get("cpe",[]),
-            "vulns": list(banner.get("vulns", {}).keys()),        }
+            "vulns": list(banner.get("vulns", {}).keys()),
+        }
         services.append(service)
-        
+
+        if ssl_sha256 is None:
+            ssl_data = banner.get("ssl", {})
+            sha256 = ssl_data.get("cert", {}).get("fingerprint", {}).get("sha256")
+            if sha256:
+                ssl_sha256 = sha256
+
     all_vulns = []
     for service in services:
         for vuln in service["vulns"]:
             if vuln not in all_vulns:
                 all_vulns.append(vuln)
-        
+
     result = {
         "ip":          ip_str,
         "org":         org,
@@ -88,6 +96,7 @@ def shodan_check(indicator,ind_type):
         "tags":        tags,
         "services":    services,
         "vulns":       all_vulns,
+        "ssl_sha256":  ssl_sha256,
     }
 
     cache_set(indicator, "shodan", result)

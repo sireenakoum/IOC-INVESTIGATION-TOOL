@@ -90,7 +90,7 @@ def vt_check(indicator, ind_type):
         print("  [VT] Rate limit hit, wait a minute and try again")
         return None
     if response.status_code != 200:
-        print(f"  [VT] Error {response.status_code}")
+        print(f"  [VT] Error {response.status_code}: {response.text[:200]}")
         return None
 
     attrs = response.json().get("data", {}).get("attributes", {})

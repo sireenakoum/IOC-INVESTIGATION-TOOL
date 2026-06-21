@@ -61,7 +61,8 @@ def abuseipdb_check(indicator, ind_type):
         )
         response.raise_for_status()
         data = response.json().get("data", {})
-    except Exception:
+    except Exception as e:
+        print(f"  [AbuseIPDB] Error: {e}")
         return None
 
     abuse_score    = data.get("abuseConfidenceScore", 0)

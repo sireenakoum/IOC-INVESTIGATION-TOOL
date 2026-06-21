@@ -46,7 +46,8 @@ def init_history_table():
         )
     """)
     conn.commit()
-    for col, col_type in [("whois_result", "TEXT"), ("score", "REAL"), ("per_source", "TEXT")]:
+    for col, col_type in [("whois_result", "TEXT"), ("score", "REAL"), ("per_source", "TEXT"), ("censys_result", "TEXT"),
+                          ("greynoise_result", "TEXT"), ("urlhaus_result", "TEXT"), ("urlscan_result", "TEXT"), ("hybrid_result", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE history ADD COLUMN {col} {col_type}")
             conn.commit()
@@ -54,23 +55,29 @@ def init_history_table():
             pass
     conn.close()
 
-def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result=None, score=None, per_source=None):
+def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result=None, score=None, per_source=None, censys_result=None,
+                 greynoise_result=None, urlhaus_result=None, urlscan_result=None, hybrid_result=None):
     init_history_table()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO history (timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO history (timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(indicator) DO UPDATE SET
-            timestamp     = excluded.timestamp,
-            vt_result     = excluded.vt_result,
-            otx_result    = excluded.otx_result,
-            abuse_result  = excluded.abuse_result,
-            shodan_result = excluded.shodan_result,
-            verdict       = excluded.verdict,
-            whois_result  = excluded.whois_result,
-            score         = excluded.score,
-            per_source    = excluded.per_source
+            timestamp        = excluded.timestamp,
+            vt_result        = excluded.vt_result,
+            otx_result       = excluded.otx_result,
+            abuse_result     = excluded.abuse_result,
+            shodan_result    = excluded.shodan_result,
+            verdict          = excluded.verdict,
+            whois_result     = excluded.whois_result,
+            score            = excluded.score,
+            per_source       = excluded.per_source,
+            censys_result    = excluded.censys_result,
+            greynoise_result = excluded.greynoise_result,
+            urlhaus_result   = excluded.urlhaus_result,
+            urlscan_result   = excluded.urlscan_result,
+            hybrid_result    = excluded.hybrid_result
     """, (
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         indicator,
@@ -82,6 +89,11 @@ def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, 
         json.dumps(whois_result),
         score,
         json.dumps(per_source) if per_source is not None else None,
+        json.dumps(censys_result),
+        json.dumps(greynoise_result),
+        json.dumps(urlhaus_result),
+        json.dumps(urlscan_result),
+        json.dumps(hybrid_result),
     ))
     conn.commit()
 
@@ -120,7 +132,7 @@ def get_last_result(indicator):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source
+        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result
         FROM history
         WHERE indicator = ?
         ORDER BY id DESC
@@ -130,18 +142,23 @@ def get_last_result(indicator):
     conn.close()
     if not row:
         return None
-    timestamp, ind, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, score, per_source_json = row
+    timestamp, ind, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, score, per_source_json, censys_json, greynoise_json, urlhaus_json, urlscan_json, hybrid_json = row
     return {
         "timestamp":  timestamp,
         "indicator":  ind,
-        "vt":         json.loads(vt_json)          if vt_json          else None,
-        "otx":        json.loads(otx_json)         if otx_json         else None,
-        "abuse":      json.loads(abuse_json)        if abuse_json        else None,
-        "shodan":     json.loads(shodan_json)       if shodan_json       else None,
-        "whois":      json.loads(whois_json)        if whois_json        else None,
+        "vt":         json.loads(vt_json)         if vt_json         else None,
+        "otx":        json.loads(otx_json)        if otx_json        else None,
+        "abuse":      json.loads(abuse_json)       if abuse_json       else None,
+        "shodan":     json.loads(shodan_json)      if shodan_json      else None,
+        "whois":      json.loads(whois_json)       if whois_json       else None,
+        "censys":     json.loads(censys_json)      if censys_json      else None,
+        "greynoise":  json.loads(greynoise_json)  if greynoise_json  else None,
+        "urlhaus":    json.loads(urlhaus_json)    if urlhaus_json    else None,
+        "urlscan":    json.loads(urlscan_json)    if urlscan_json    else None,
+        "hybrid":     json.loads(hybrid_json)     if hybrid_json     else None,
         "verdict":    verdict,
         "score":      score,
-        "per_source": json.loads(per_source_json)  if per_source_json   else {},
+        "per_source": json.loads(per_source_json) if per_source_json  else {},
     }
 
 
@@ -183,7 +200,7 @@ def get_history_entry(n):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result
+        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result
         FROM history
         ORDER BY id DESC
         LIMIT 1 OFFSET ?
@@ -192,14 +209,19 @@ def get_history_entry(n):
     conn.close()
     if not row:
         return None
-    timestamp, indicator, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json = row
+    timestamp, indicator, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, censys_json, greynoise_json, urlhaus_json, urlscan_json, hybrid_json = row
     return {
         "timestamp": timestamp,
         "indicator": indicator,
-        "vt":        json.loads(vt_json)    if vt_json    else None,
-        "otx":       json.loads(otx_json)   if otx_json   else None,
-        "abuse":     json.loads(abuse_json)  if abuse_json  else None,
-        "shodan":    json.loads(shodan_json) if shodan_json else None,
-        "whois":     json.loads(whois_json)  if whois_json  else None,
+        "vt":        json.loads(vt_json)        if vt_json        else None,
+        "otx":       json.loads(otx_json)       if otx_json       else None,
+        "abuse":     json.loads(abuse_json)     if abuse_json     else None,
+        "shodan":    json.loads(shodan_json)    if shodan_json    else None,
+        "whois":     json.loads(whois_json)     if whois_json     else None,
+        "censys":    json.loads(censys_json)    if censys_json    else None,
+        "greynoise": json.loads(greynoise_json) if greynoise_json else None,
+        "urlhaus":   json.loads(urlhaus_json)   if urlhaus_json   else None,
+        "urlscan":   json.loads(urlscan_json)   if urlscan_json   else None,
+        "hybrid":    json.loads(hybrid_json)    if hybrid_json    else None,
         "verdict":   verdict,
     }

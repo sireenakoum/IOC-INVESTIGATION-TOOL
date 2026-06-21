@@ -1,6 +1,6 @@
 # IOC Investigation Tool
 
-A threat intelligence aggregator that checks IPs, domains, and file hashes against VirusTotal, AlienVault OTX, AbuseIPDB, Shodan, and WHOIS, then issues a scored verdict.
+A threat intelligence aggregator that checks IPs, domains, and file hashes against VirusTotal, AlienVault OTX, AbuseIPDB, Shodan, Censys, WHOIS, GreyNoise, URLhaus, URLScan, and Hybrid Analysis, then issues a scored verdict.
 
 ---
 
@@ -18,7 +18,15 @@ OTX_API_KEY=your_key
 ABUSEIPDB_API_KEY=your_key
 SHODAN_API_KEY=your_key
 WHOIS_API_KEY=your_key
+CENSYS_API_TOKEN=your_bearer_token
+URLSCAN_API_KEY=your_key          # optional
+HYBRID_API_KEY=your_key           # optional
+URLHAUS_API_KEY=your_key          # optional
 ```
+
+The Censys token is the Bearer token shown in your account at search.censys.io → API. Censys is optional — the tool works without it, but Shodan+Censys corroboration scoring requires it.
+
+GreyNoise uses the free community endpoint and requires no API key.
 
 Run:
 
@@ -32,9 +40,9 @@ python main.py
 
 | Input | Action |
 |-------|--------|
-| IPv4 address | Check against VT, OTX, AbuseIPDB, and Shodan |
-| Domain name | Check against VT, OTX, and WHOIS |
-| MD5 / SHA1 / SHA256 hash | Check against VT and OTX |
+| IPv4 address | Check against VT, OTX, AbuseIPDB, Shodan, Censys, GreyNoise, URLhaus, and URLScan |
+| Domain name | Check against VT, OTX, WHOIS, URLhaus, URLScan, and Hybrid Analysis |
+| MD5 / SHA1 / SHA256 hash | Check against VT, OTX, and Hybrid Analysis |
 | `verbose` | Switch to full breakdown view |
 | `brief` | Switch to summary view (default) |
 | `history` | List all past lookups |
@@ -54,12 +62,12 @@ Results are saved to `ioc_cache.db` (SQLite). All sources are cached for 7 days 
 | Score | Verdict |
 |-------|---------|
 | 0 | Clean |
-| 1–2 | Suspicious |
-| 3–4 | Low risk |
-| 5–7 | Medium risk |
-| 8+ | High risk |
+| 1–3 | Suspicious |
+| 4–7 | Low risk |
+| 8–13 | Medium risk |
+| 14+ | High risk |
 
-The displayed **avg score** is the mean of all active sources' individual scores.
+The **combined score** is the sum of all active sources' individual scores (capped at 20), plus WHOIS modifier (up to +2) and Shodan+Censys corroboration bonus (up to +4).
 
 ### VirusTotal
 
@@ -85,7 +93,7 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 | Negative reputation | +1 |
 | Recent activity indicator (2025 / 2026 in pulse name, tags, or references) | +1 |
 | Pulse tags matching threat categories | +1–4 each (cap +5) |
-| Named adversary (known APT / other) | +4 / +2 (cap +4) |
+| Named APT actor (from known APT list) | +4 (cap +4) |
 | Named malware family | +2 (cap +4) |
 | Passive DNS last seen ≤30 days | +1 |
 
@@ -100,8 +108,6 @@ Noise-only pulses (honeypot sensors: `cowrie`, `suricata`, `dionaea`, `tpot`, et
 | High-severity attack types (e.g. Phishing, Hacking, SQL Injection) | +2 each (cap +4) |
 | Medium-severity attack types (e.g. Brute-Force, SSH) | +1 each (cap +2) |
 
-For IPs on CDN ASNs, the attack type bonus is additionally capped at +3.
-
 ### Shodan (IPs only)
 
 | Signal | Points |
@@ -114,7 +120,71 @@ For IPs on CDN ASNs, the attack type bonus is additionally capped at +3.
 
 **Minimum evidence threshold:** open ports and a missing hostname alone never push the verdict above Clean. A non-clean verdict requires at least one CVE, suspicious product, or high-weight tag (weight ≥ 3).
 
-**Trusted ASNs** (Cloudflare AS13335, Google AS15169, Amazon AS16509, Microsoft AS8075, Fastly AS54113, Akamai AS20940): port scoring and the hostname penalty are skipped. Only CVEs, confirmed malicious products, and tags with weight ≥ 3 are scored. The final combined verdict is globally capped at Medium risk.
+### Censys (IPs only)
+
+| Signal | Points |
+|--------|--------|
+| CVEs (1+, 3+, 5+) | +1 / +2 / +3 |
+| Malicious product in service banner (cap +6) | +weight each |
+| Censys labels matching known threat categories (cap +5) | +1–4 each |
+
+**Minimum evidence threshold:** same as Shodan — a non-clean verdict requires at least one CVE, suspicious product, or high-weight label (weight ≥ 3).
+
+### Shodan + Censys corroboration (IPs only)
+
+Seven cross-source signals confirm whether two independent scanners agree. Total bonus is capped at +4.
+
+| Signal | Bonus |
+|--------|-------|
+| Suspicious port seen by both scanners | +1 |
+| CVE confirmed by both scanners | +1 |
+| Suspicious product confirmed by both scanners | +1 |
+| Matching product/version banner on the same port | +1 |
+| TLS certificate fingerprint match | +2 |
+| Service overlap ≥ 70% (excluding common ports, 3+ ports each side) | +1 |
+| Both scanned within 7 days | +1 |
+
+### GreyNoise (IPs only)
+
+GreyNoise "benign" (internet scanner/noise) is excluded from the combined score and noted as context only.
+
+| Signal | Points |
+|--------|--------|
+| Classification: malicious | +3 |
+| Classification: suspicious | +2 |
+| Named actor | +2 |
+| CVE associated | +1 |
+
+Cap: +6.
+
+### URLhaus (IPs and domains)
+
+| Signal | Points |
+|--------|--------|
+| Malicious URL count (1 / 2–4 / 5+) | +1 / +2 / +3 |
+| Threat type: ransomware / trojan / banker | +3 |
+| Threat type: malware / dropper | +2 |
+
+Cap: +8.
+
+### Hybrid Analysis (IPs, domains, and hashes)
+
+| Signal | Points |
+|--------|--------|
+| Threat score 20–39 / 40–59 / 60–79 / 80+ | +2 / +3 / +4 / +5 |
+| Malware family named | +1 |
+| Verdict: malicious (no numeric score) | +3 |
+| Verdict: suspicious (no numeric score) | +1 |
+
+Cap: +6.
+
+### URLScan (IPs and domains)
+
+| Signal | Points |
+|--------|--------|
+| Malicious verdict | +3 |
+| Threat categories (cap +2) | +1 each |
+| Phishing-keyword domains in scan (cap +4) | +2 each |
 
 ### WHOIS (domains only)
 
@@ -130,6 +200,10 @@ WHOIS is a supporting signal — it strengthens existing suspicion but cannot cr
 | Privacy / proxy masking on registrant | +1 |
 | No registrar found | +1 |
 
+### Trusted ASNs
+
+IPs on CDN or cloud-hosting ASNs (Cloudflare, Fastly, Akamai, AWS, Azure, Google Cloud) have the final combined verdict capped at Medium risk, regardless of the raw score.
+
 ---
 
 ## Vendor tiers
@@ -139,7 +213,7 @@ VirusTotal vendor hits are weighted by engine reputation (AV-Comparatives 2023�
 | Tier | Examples | Weight per hit |
 |------|----------|---------------|
 | Tier 1 | Bitdefender, ESET, Kaspersky, Avast, AVG, G Data, Norton, Microsoft, Palo Alto Networks, Symantec | +2 (cap 6) |
-| Tier 2 | CrowdStrike, Sophos, Trend Micro, McAfee, Malwarebytes, F-Secure, Elastic, VIPRE, Emsisoft | +1 (cap 3) |
+| Tier 2 | CrowdStrike, Sophos, Trend Micro, McAfee, Malwarebytes, F-Secure, Elastic, VIPRE, Emsisoft, Total Defense, Fortect, K7 | +1 (cap 3) |
 | Tier 3 | All other VT vendors | +0.5 (cap 2) |
 
 Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json`.
@@ -156,8 +230,13 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 | [sources/otx.py](sources/otx.py) | AlienVault OTX lookups + passive DNS |
 | [sources/abuseipdb.py](sources/abuseipdb.py) | AbuseIPDB lookups |
 | [sources/shodan.py](sources/shodan.py) | Shodan lookups — open ports, CVEs, banners, tags |
+| [sources/censys.py](sources/censys.py) | Censys v2 lookups — ports, services, CVEs, labels |
 | [sources/whois.py](sources/whois.py) | WHOIS lookups — domain age, registrar, privacy masking |
-| [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic |
+| [sources/greynoise.py](sources/greynoise.py) | GreyNoise community lookups — classification, actor, CVE (IPs only) |
+| [sources/urlhaus.py](sources/urlhaus.py) | URLhaus lookups — malicious URL count and threat type (IPs and domains) |
+| [sources/urlscan.py](sources/urlscan.py) | URLScan lookups — malicious verdict, categories, phishing domains |
+| [sources/hybrid.py](sources/hybrid.py) | Hybrid Analysis lookups — threat score and malware family (IPs, domains, hashes) |
+| [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic, Shodan+Censys corroboration |
 | [output.py](output.py) | History (save, list, retrieve, clear) |
 | [cache.py](cache.py) | SQLite cache (`ioc_cache.db`), 7-day TTL |
 | [config.json](config.json) | Vendor tiers, tag weights, suspicious ports/products, trusted ASNs, APT actors |

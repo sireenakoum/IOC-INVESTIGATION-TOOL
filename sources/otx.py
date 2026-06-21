@@ -42,7 +42,7 @@ def otx_check(indicator, ind_type):
         print("  [OTX] Rate limit hit")
         return None
     if response.status_code != 200:
-        print(f"  [OTX] Error {response.status_code}")
+        print(f"  [OTX] Error {response.status_code}: {response.text[:200]}")
         return None
 
     data = response.json()

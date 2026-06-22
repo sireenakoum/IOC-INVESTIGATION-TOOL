@@ -622,8 +622,8 @@ while True:
         if len(parts) == 1:
             print_history()
         elif len(parts) == 2 and parts[1].lower() == "clear":
-            confirm = input("  Clear all history? Type 'yes' to confirm: ").strip().lower()
-            if confirm == "yes":
+            confirm = input("  Clear all history? [y/N]: ").strip().lower()
+            if confirm == "y":
                 clear_history()
                 print("  History cleared.")
             else:
@@ -648,8 +648,8 @@ while True:
         continue
 
     if parts and " ".join(parts[:2]).lower() == "reset cache":
-        confirm = input("  Clear all cached API results? Type 'yes' to confirm: ").strip().lower()
-        if confirm == "yes":
+        confirm = input("  Clear all cached API results? [y/N]: ").strip().lower()
+        if confirm == "y":
             clear_cache()
             print("  API cache cleared.")
         else:
@@ -664,8 +664,8 @@ while True:
         if detect_type(target) is None:
             print(f"  Invalid indicator: {target}")
             continue
-        confirm = input(f"  Delete {target} from history and cache and rescan? Type 'yes' to confirm: ").strip().lower()
-        if confirm != "yes":
+        confirm = input(f"  Delete {target} from history and cache and rescan? [y/N]: ").strip().lower()
+        if confirm != "y":
             print("  Cancelled.")
             continue
         old_entry       = get_last_result(target)

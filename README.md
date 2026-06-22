@@ -44,7 +44,7 @@ python main.py
 |-------|--------|
 | IPv4 address | Check against VT, OTX, AbuseIPDB, Shodan, Censys, GreyNoise, URLhaus, URLScan, ThreatFox, and Spamhaus DROP (via ASN) |
 | Domain name | Check against VT, OTX, WHOIS, URLhaus, URLScan, Hybrid Analysis, and ThreatFox |
-| MD5 / SHA1 / SHA256 hash | Check against VT, OTX, and Hybrid Analysis |
+| MD5 / SHA1 / SHA256 hash | Check against VT, OTX, Hybrid Analysis, and ThreatFox |
 | `verbose` | Switch to full breakdown view |
 | `brief` | Switch to summary view (default) |
 | `history` | List all past lookups |
@@ -194,14 +194,15 @@ Cap: +6.
 | Page title contains suspicious infrastructure keywords (e.g. "tor exit", "proxy") | +1 |
 | Phishing-keyword domains in scan (cap +4) | +2 each |
 
-### ThreatFox (IPs and domains)
+### ThreatFox (IPs, domains, URLs, and hashes)
 
 | Signal | Points |
 |--------|--------|
 | IOC count (1 / 3–9 / 10+) | +1 / +2 / +3 |
-| Threat type: botnet_cc | +3 |
-| Threat type: payload_delivery | +2 |
-| Threat type: cc_skimming | +1 |
+| Threat type: botnet_cc (C2 server infrastructure) | +3 |
+| Threat type: payload_delivery (malware distribution server) | +2 |
+| Threat type: payload (file hash of a malware sample) | +2 |
+| Threat type: cc_skimming (credit card skimming infrastructure) | +1 |
 | Confidence level 50–74% / 75%+ | +1 / +2 |
 | Tags (cap +2) | +weight |
 | Malware family named | +1 |
@@ -220,8 +221,7 @@ This bonus is added to the final combined score (after all per-source scores and
 
 ### WHOIS (domains only)
 
-WHOIS is a supporting signal — it strengthens existing suspicion but cannot create it from nothing. The final score modifier is capped at +1 when the base score is weak (< 4) and +2 when real threat signal already exists (≥ 4). The WHOIS source verdict is capped at Medium risk.
-
+WHOIS is a supporting signal — it strengthens existing suspicion but cannot create it from nothing. The final score modifier is capped at +1 when the base score is weak (< 4) and +2 when real threat signal already exists (≥ 4).
 | Signal | Points |
 |--------|--------|
 | Domain age < 7 days | +4 |
@@ -264,7 +264,7 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 | [sources/urlhaus.py](sources/urlhaus.py) | URLhaus lookups — malicious URL count and threat type (IPs and domains) |
 | [sources/urlscan.py](sources/urlscan.py) | URLScan lookups — malicious verdict, categories, page title, phishing domains |
 | [sources/hybrid.py](sources/hybrid.py) | Hybrid Analysis lookups — threat score and malware family (IPs, domains, hashes) |
-| [sources/threatfox.py](sources/threatfox.py) | ThreatFox lookups — IOC count, threat type, malware family, confidence (IPs and domains) |
+| [sources/threatfox.py](sources/threatfox.py) | ThreatFox lookups — IOC count, threat type, malware family, confidence (IPs, domains, URLs, hashes) |
 | [sources/spamhaus.py](sources/spamhaus.py) | Spamhaus DROP ASN lookup — in-memory cache, 6 h TTL, no API key required (IPs only) |
 | [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic, Shodan+Censys corroboration |
 | [output.py](output.py) | History (save, list, retrieve, clear) |

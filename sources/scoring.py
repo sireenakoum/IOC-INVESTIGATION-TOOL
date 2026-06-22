@@ -1035,10 +1035,7 @@ def score_whois(whois, config=None):
 
     has_data = creation is not None or registrar is not None
 
-    # Cap verdict at medium_risk — WHOIS alone should never produce High risk
     verdict = score_to_verdict(score) if has_data else "no_data"
-    if verdict == "high":
-        verdict = "medium_risk"
 
     return {
         "verdict":        verdict,
@@ -1182,6 +1179,9 @@ def score_threatfox(threatfox, config=None):
     elif threat_type == "payload_delivery":
         score += 2
         breakdown.append(f"Threat type: {threat_type:<18} → +2  (payload delivery)")
+    elif threat_type == "payload":
+        score += 2
+        breakdown.append(f"Threat type: {threat_type:<18} → +2  (malware payload)")
     elif threat_type == "cc_skimming":
         score += 1
         breakdown.append(f"Threat type: {threat_type:<18} → +1  (credit card skimming)")

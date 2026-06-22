@@ -8,11 +8,11 @@ THREATFOX_API_KEY = os.getenv("URLHAUS_API_KEY")
 
 BASE_URL = "https://threatfox-api.abuse.ch/api/v1/"
 
-_THREAT_PRIORITY = ["botnet_cc", "payload_delivery", "cc_skimming"]
+_THREAT_PRIORITY = ["botnet_cc", "payload_delivery", "payload", "cc_skimming"]
 
 
 def threatfox_check(indicator, ind_type):
-    if ind_type not in ("ip", "domain", "url"):
+    if ind_type not in ("ip", "domain", "url", "hash"):
         return None
 
     cached = cache_get(indicator, "threatfox")

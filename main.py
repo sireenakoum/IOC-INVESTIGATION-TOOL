@@ -11,6 +11,8 @@ from sources.greynoise import greynoise_check
 from sources.urlhaus import urlhaus_check
 from sources.urlscan import urlscan_check
 from sources.hybrid import hybrid_check
+from sources.spamhaus import spamhaus_asn_check
+from sources.threatfox import threatfox_check
 from sources.scoring import combined_verdict, load_config, resolve_vendor, VERDICT_DISPLAY
 from cache import clear_cache, clear_indicator_cache
 from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator, get_last_result, compare_results
@@ -21,11 +23,14 @@ VERBOSE = False
 
 
 def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None, censys=None,
-                   greynoise=None, urlhaus=None, urlscan=None, hybrid=None):
+                   greynoise=None, urlhaus=None, urlscan=None, hybrid=None, spamhaus_drop=None,
+                   threatfox=None):
 
     verdict_result = combined_verdict(vt, otx, abuse, shodan, whois=whois, censys=censys,
                                       greynoise=greynoise, urlhaus=urlhaus,
-                                      urlscan=urlscan, hybrid=hybrid, config=config)
+                                      urlscan=urlscan, hybrid=hybrid,
+                                      spamhaus_drop=spamhaus_drop, threatfox=threatfox,
+                                      config=config)
 
     if not VERBOSE:
         print(f"\n{'='*45}")
@@ -127,6 +132,14 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
         else:
             print(f"  [URLhaus]       no data")
 
+        if threatfox:
+            ioc_count   = threatfox.get('ioc_count', 0)
+            malware     = threatfox.get('malware')
+            threat_type = threatfox.get('threat_type')
+            print(f"  [ThreatFox]     {ioc_count} IOC(s) — {malware or threat_type or 'unknown'}")
+        else:
+            print(f"  [ThreatFox]     no data")
+
         if urlscan:
             malicious = urlscan.get('malicious', False)
             flag = '⚠️  malicious' if malicious else 'clean'
@@ -140,6 +153,13 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
             print(f"  [Hybrid]        threat score {threat_score} — {verdict}")
         else:
             print(f"  [Hybrid]        no data")
+
+        if spamhaus_drop and spamhaus_drop.get('listed'):
+            asname = spamhaus_drop.get('asname') or ''
+            cc     = spamhaus_drop.get('cc') or ''
+            print(f"  [Spamhaus DROP] listed — {asname} ({cc})")
+        elif spamhaus_drop is not None:
+            print(f"  [Spamhaus DROP] not listed")
 
         print(f"\n  Verdict        : {verdict_result['final_verdict_display']}")
         print(f"  Recommendation : {verdict_result['recommendation']}")
@@ -380,6 +400,23 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
                 for u in urls[:3]:
                     print(f"    [{u.get('url_status', '?')}] {u.get('url', '')[:70]}")
 
+        if threatfox:
+            print(f"\n  [ThreatFox]")
+            print(f"  IOC count      : {threatfox.get('ioc_count', 0)}")
+            if threatfox.get('threat_type'):
+                print(f"  Threat type    : {threatfox['threat_type']}")
+            if threatfox.get('malware'):
+                print(f"  Malware family : {threatfox['malware']}")
+            if threatfox.get('confidence_level') is not None:
+                print(f"  Confidence     : {threatfox['confidence_level']}%")
+            if threatfox.get('first_seen'):
+                print(f"  First seen     : {threatfox['first_seen'][:10]}")
+            iocs = threatfox.get('iocs', [])
+            if iocs:
+                print(f"\n  IOCs:")
+                for ioc in iocs[:3]:
+                    print(f"    [{ioc.get('ioc_type', '?')}] {ioc.get('ioc', '')[:70]}")
+
         if urlscan:
             print(f"\n  [URLScan]")
             print(f"  Malicious      : {'Yes' if urlscan.get('malicious') else 'No'}")
@@ -403,6 +440,17 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
             if hybrid.get('family'):
                 print(f"  Families       : {', '.join(hybrid['family'])}")
 
+        if spamhaus_drop is not None:
+            print(f"\n  [Spamhaus DROP]")
+            if spamhaus_drop.get('listed'):
+                print(f"  Listed         : Yes")
+                print(f"  ASN name       : {spamhaus_drop.get('asname') or 'N/A'}")
+                print(f"  Country        : {spamhaus_drop.get('cc') or 'N/A'}")
+                print(f"  Domain         : {spamhaus_drop.get('domain') or 'N/A'}")
+                print(f"  RIR            : {spamhaus_drop.get('rir') or 'N/A'}")
+            else:
+                print(f"  Listed         : No")
+
         print(f"\n  Per Source:")
         for name, s in verdict_result['per_source'].items():
             print(f"    {name:<12}: {s['verdict_display']}  (evidence: {s['evidence_count']})")
@@ -414,7 +462,7 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
 
         print(f"\n  Contribution   :")
         for name, pct in verdict_result['contribution'].items():
-            print(f"    {name:<12}: {pct}")
+            print(f"    {name:<14}: {pct}")
 
         print(f"\n  Verdict        : {verdict_result['final_verdict_display']}  (score: {verdict_result['score']})")
         print(f"  Recommendation : {verdict_result['recommendation']}")
@@ -469,6 +517,7 @@ def _print_changes(changes, since_ts):
 
 
 def check_indicator(indicator, previous=None):
+    global VERBOSE
 
     ind_type = detect_type(indicator)
 
@@ -486,16 +535,26 @@ def check_indicator(indicator, previous=None):
     censys = censys_check(indicator, ind_type)
     greynoise = greynoise_check(indicator, ind_type)
     urlhaus   = urlhaus_check(indicator, ind_type)
+    threatfox = threatfox_check(indicator, ind_type)
     urlscan   = urlscan_check(indicator, ind_type)
     hybrid    = hybrid_check(indicator, ind_type)
 
+    _asn = (
+        (shodan.get("asn") if isinstance(shodan, dict) else None) or
+        (censys.get("asn") if isinstance(censys, dict) else None) or
+        (vt.get("asn")     if isinstance(vt, dict)     else None)
+    )
+    spamhaus_drop = spamhaus_asn_check(_asn) if _asn else None
+
     verdict_result = display_report(indicator, ind_type, vt, otx, abuse, shodan, whois, censys,
                                     greynoise=greynoise, urlhaus=urlhaus,
-                                    urlscan=urlscan, hybrid=hybrid)
+                                    urlscan=urlscan, hybrid=hybrid, spamhaus_drop=spamhaus_drop,
+                                    threatfox=threatfox)
     save_results(indicator, vt, otx, abuse, shodan, verdict_result["final_verdict"], whois,
                  score=verdict_result["score"], per_source=verdict_result["per_source"],
                  censys_result=censys, greynoise_result=greynoise, urlhaus_result=urlhaus,
-                 urlscan_result=urlscan, hybrid_result=hybrid)
+                 urlscan_result=urlscan, hybrid_result=hybrid,
+                 spamhaus_drop_result=spamhaus_drop, threatfox_result=threatfox)
 
     if old_entry is not None:
         new_cmp = {
@@ -504,6 +563,15 @@ def check_indicator(indicator, previous=None):
             "per_source": verdict_result["per_source"],
         }
         _print_changes(compare_results(old_entry, new_cmp), old_entry["timestamp"])
+
+    if not VERBOSE:
+        see_verbose = input("  Show full breakdown? [y/N]: ").strip().lower()
+        if see_verbose == "y":
+            VERBOSE = True
+            display_report(indicator, ind_type, vt, otx, abuse, shodan, whois, censys,
+                           greynoise=greynoise, urlhaus=urlhaus, urlscan=urlscan,
+                           hybrid=hybrid, spamhaus_drop=spamhaus_drop, threatfox=threatfox)
+            VERBOSE = False
 
 
 # Main loop
@@ -572,7 +640,9 @@ while True:
                 display_report(entry["indicator"], ind_type, entry["vt"], entry["otx"], entry["abuse"],
                                entry["shodan"], entry.get("whois"), entry.get("censys"),
                                greynoise=entry.get("greynoise"), urlhaus=entry.get("urlhaus"),
-                               urlscan=entry.get("urlscan"), hybrid=entry.get("hybrid"))
+                               urlscan=entry.get("urlscan"), hybrid=entry.get("hybrid"),
+                               spamhaus_drop=entry.get("spamhaus_drop"),
+                               threatfox=entry.get("threatfox"))
         else:
             print("  Usage: history  or  history <number>  or  history clear")
         continue

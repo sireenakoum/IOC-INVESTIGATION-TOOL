@@ -1,6 +1,6 @@
 # IOC Investigation Tool
 
-A threat intelligence aggregator that checks IPs, domains, and file hashes against VirusTotal, AlienVault OTX, AbuseIPDB, Shodan, Censys, WHOIS, GreyNoise, URLhaus, URLScan, and Hybrid Analysis, then issues a scored verdict.
+A threat intelligence aggregator that checks IPs, domains, and file hashes against VirusTotal, AlienVault OTX, AbuseIPDB, Shodan, Censys, WHOIS, GreyNoise, URLhaus, URLScan, Hybrid Analysis, ThreatFox, and Spamhaus DROP, then issues a scored verdict.
 
 ---
 
@@ -21,12 +21,14 @@ WHOIS_API_KEY=your_key
 CENSYS_API_KEY=your_bearer_token
 URLSCAN_API_KEY=your_key          # optional
 HYBRID_API_KEY=your_key           # optional
-URLHAUS_API_KEY=your_key          # optional
+URLHAUS_API_KEY=your_key          # optional; also used for ThreatFox
 ```
 
 The Censys token is the Bearer token shown in your account at search.censys.io → API. Censys is optional — the tool works without it, but Shodan+Censys corroboration scoring requires it.
 
 GreyNoise uses the free community endpoint and requires no API key.
+
+Spamhaus DROP uses a public feed and requires no API key.
 
 Run:
 
@@ -40,8 +42,8 @@ python main.py
 
 | Input | Action |
 |-------|--------|
-| IPv4 address | Check against VT, OTX, AbuseIPDB, Shodan, Censys, GreyNoise, URLhaus, and URLScan |
-| Domain name | Check against VT, OTX, WHOIS, URLhaus, URLScan, and Hybrid Analysis |
+| IPv4 address | Check against VT, OTX, AbuseIPDB, Shodan, Censys, GreyNoise, URLhaus, URLScan, ThreatFox, and Spamhaus DROP (via ASN) |
+| Domain name | Check against VT, OTX, WHOIS, URLhaus, URLScan, Hybrid Analysis, and ThreatFox |
 | MD5 / SHA1 / SHA256 hash | Check against VT, OTX, and Hybrid Analysis |
 | `verbose` | Switch to full breakdown view |
 | `brief` | Switch to summary view (default) |
@@ -192,6 +194,30 @@ Cap: +6.
 | Page title contains suspicious infrastructure keywords (e.g. "tor exit", "proxy") | +1 |
 | Phishing-keyword domains in scan (cap +4) | +2 each |
 
+### ThreatFox (IPs and domains)
+
+| Signal | Points |
+|--------|--------|
+| IOC count (1 / 3–9 / 10+) | +1 / +2 / +3 |
+| Threat type: botnet_cc | +3 |
+| Threat type: payload_delivery | +2 |
+| Threat type: cc_skimming | +1 |
+| Confidence level 50–74% / 75%+ | +1 / +2 |
+| Tags (cap +2) | +weight |
+| Malware family named | +1 |
+
+Cap: +10.
+
+### Spamhaus DROP (IPs only)
+
+Spamhaus DROP checks whether the indicator's ASN appears on the [Don't Route Or Peer list](https://www.spamhaus.org/drop/). The list is fetched once and cached in-memory for 6 hours; no API key is required.
+
+| Signal | Points |
+|--------|--------|
+| ASN on Spamhaus DROP list | +4 |
+
+This bonus is added to the final combined score (after all per-source scores and corroboration) and is capped at the overall maximum of 20.
+
 ### WHOIS (domains only)
 
 WHOIS is a supporting signal — it strengthens existing suspicion but cannot create it from nothing. The final score modifier is capped at +1 when the base score is weak (< 4) and +2 when real threat signal already exists (≥ 4). The WHOIS source verdict is capped at Medium risk.
@@ -238,6 +264,8 @@ Vendor name aliases (e.g. `ESET-NOD32` → `ESET`) are resolved via `config.json
 | [sources/urlhaus.py](sources/urlhaus.py) | URLhaus lookups — malicious URL count and threat type (IPs and domains) |
 | [sources/urlscan.py](sources/urlscan.py) | URLScan lookups — malicious verdict, categories, page title, phishing domains |
 | [sources/hybrid.py](sources/hybrid.py) | Hybrid Analysis lookups — threat score and malware family (IPs, domains, hashes) |
+| [sources/threatfox.py](sources/threatfox.py) | ThreatFox lookups — IOC count, threat type, malware family, confidence (IPs and domains) |
+| [sources/spamhaus.py](sources/spamhaus.py) | Spamhaus DROP ASN lookup — in-memory cache, 6 h TTL, no API key required (IPs only) |
 | [sources/scoring.py](sources/scoring.py) | Per-source scoring, combined verdict logic, Shodan+Censys corroboration |
 | [output.py](output.py) | History (save, list, retrieve, clear) |
 | [cache.py](cache.py) | SQLite cache (`ioc_cache.db`), no expiry |

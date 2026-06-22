@@ -1113,7 +1113,7 @@ def score_urlhaus(urlhaus, config=None):
 
     score     = 0
     breakdown = []
-    url_count = urlhaus.get("url_count", 0)
+    url_count = int(urlhaus.get("url_count", 0) or 0)
     threat    = urlhaus.get("threat") or ""
 
     if url_count >= 5:
@@ -1146,6 +1146,87 @@ def score_urlhaus(urlhaus, config=None):
         "verdict":        score_to_verdict(score) if has_data else "no_data",
         "score":          score,
         "evidence_count": url_count,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+    }
+
+
+def score_threatfox(threatfox, config=None):
+    if not threatfox:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    score            = 0
+    breakdown        = []
+    ioc_count        = threatfox.get("ioc_count", 0) or 0
+    threat_type      = threatfox.get("threat_type") or ""
+    confidence_level = threatfox.get("confidence_level") or 0
+    malware          = threatfox.get("malware")
+    tags             = threatfox.get("tags") or []
+
+    if ioc_count >= 10:
+        score += 3
+        breakdown.append(f"IOC count {ioc_count:<6}           → +3")
+    elif ioc_count >= 3:
+        score += 2
+        breakdown.append(f"IOC count {ioc_count:<6}           → +2")
+    elif ioc_count == 1:
+        score += 1
+        breakdown.append(f"IOC count {ioc_count:<6}           → +1")
+    else:
+        breakdown.append(f"IOC count {ioc_count:<6}           → +0")
+
+    if threat_type == "botnet_cc":
+        score += 3
+        breakdown.append(f"Threat type: {threat_type:<18} → +3  (C2 infrastructure)")
+    elif threat_type == "payload_delivery":
+        score += 2
+        breakdown.append(f"Threat type: {threat_type:<18} → +2  (payload delivery)")
+    elif threat_type == "cc_skimming":
+        score += 1
+        breakdown.append(f"Threat type: {threat_type:<18} → +1  (credit card skimming)")
+    elif threat_type:
+        breakdown.append(f"Threat type: {threat_type:<18} → +0")
+    else:
+        breakdown.append(f"Threat type: none                → +0")
+
+    if confidence_level >= 75:
+        score += 2
+        breakdown.append(f"Confidence level {confidence_level:<3}          → +2")
+    elif confidence_level >= 50:
+        score += 1
+        breakdown.append(f"Confidence level {confidence_level:<3}          → +1")
+    else:
+        breakdown.append(f"Confidence level {confidence_level:<3}          → +0  (low confidence)")
+
+    tag_score  = 0
+    found_tags = []
+    if config:
+        for tag in tags:
+            weight = config.get("tag_weights", {}).get(tag.lower(), 0)
+            if weight > 0:
+                tag_score += weight
+                found_tags.append(tag)
+    tag_score = min(tag_score, 2)
+    score += tag_score
+    if found_tags:
+        breakdown.append(f"Tags {', '.join(found_tags):<25} → +{tag_score}  (cap +2)")
+    else:
+        breakdown.append(f"Tags none                        → +0")
+
+    if malware:
+        score += 1
+        breakdown.append(f"Malware family: {malware:<20} → +1")
+    else:
+        breakdown.append(f"Malware family: none             → +0")
+
+    score    = min(score, 10)
+    has_data = ioc_count > 0
+
+    return {
+        "verdict":        score_to_verdict(score) if has_data else "no_data",
+        "score":          score,
+        "evidence_count": ioc_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
     }
@@ -1289,7 +1370,7 @@ def score_urlscan(urlscan, config=None):
 
 def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
                      censys=None, greynoise=None, urlhaus=None, hybrid=None,
-                     urlscan=None, config=None):
+                     urlscan=None, spamhaus_drop=None, threatfox=None, config=None):
     """Combine per-source scores into a single final verdict using a plain average.
 
     Gated sources (CDN/cloud ASNs with score==0) are excluded from the average.
@@ -1310,6 +1391,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     whois_result     = score_whois(whois, config)
     greynoise_result = score_greynoise(greynoise, config)
     urlhaus_result   = score_urlhaus(urlhaus, config)
+    threatfox_result = score_threatfox(threatfox, config)
     hybrid_result    = score_hybrid(hybrid, config)
     urlscan_result   = score_urlscan(urlscan, config)
     sources = {
@@ -1320,6 +1402,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         "Censys":     censys_result,
         "GreyNoise":  greynoise_result,
         "URLhaus":    urlhaus_result,
+        "ThreatFox":  threatfox_result,
         "Hybrid":     hybrid_result,
         "URLScan":    urlscan_result,
     }
@@ -1369,6 +1452,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
                 "corroborated_products": [], "corroborated_banners": [],
                 "cert_match": False, "service_overlap_pct": 0,
             },
+            "spamhaus_drop": spamhaus_drop,
         }
 
     if active:
@@ -1402,6 +1486,12 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     if corr_bonus > 0:
         final_score  = min(final_score + corr_bonus, 20)
         final_verdict = score_to_verdict(final_score)
+
+    spamhaus_bonus = 0
+    if spamhaus_drop and spamhaus_drop.get("listed"):
+        spamhaus_bonus = 4
+        final_score    = min(final_score + spamhaus_bonus, 20)
+        final_verdict  = score_to_verdict(final_score)
 
     vt_country      = (vt or {}).get("country", "")
     censys_country  = (censys or {}).get("country", "") if isinstance(censys, dict) else ""
@@ -1448,6 +1538,11 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         full_breakdown.append(f"── WHOIS ──")
         full_breakdown.extend(whois_result["breakdown"])
 
+    if spamhaus_bonus > 0:
+        full_breakdown.append(f"── Spamhaus DROP ──")
+        asname = (spamhaus_drop or {}).get("asname", "")
+        full_breakdown.append(f"ASN on Spamhaus DROP list ({asname}) → +{spamhaus_bonus}")
+
     if corr_bonus > 0:
         full_breakdown.append(f"── Shodan+Censys Corroboration ──")
         if corroboration["corroborated_ports"]:
@@ -1470,7 +1565,17 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             full_breakdown.append(f"SSH host key fingerprint match → +{corroboration['ssh_bonus']}")
         full_breakdown.append(f"Corroboration total (cap 4) → +{corr_bonus}")
 
-    raw_total     = sum(r["score"] for r in active.values())
+    # Build flat score_components including all bonus entries so percentages
+    # reflect what actually drove the final score, not just source subtotals.
+    score_components = {name: r["score"] for name, r in sources.items() if r["has_data"]}
+    if spamhaus_bonus > 0:
+        score_components["Spamhaus DROP"] = spamhaus_bonus
+    if whois_modifier > 0:
+        score_components["WHOIS"] = whois_modifier
+    if corr_bonus > 0:
+        score_components["Corroboration"] = corr_bonus
+
+    raw_total     = sum(score_components.values())
     display_score = int(min(raw_total, 20))
     contribution  = {}
     for name, r in sources.items():
@@ -1481,6 +1586,11 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         else:
             pct = round(max(r["score"], 0) / raw_total * 100)
             contribution[name] = f"{pct}%"
+
+    for bonus_name in ("Spamhaus DROP", "WHOIS", "Corroboration"):
+        if bonus_name in score_components:
+            pct = round(score_components[bonus_name] / raw_total * 100)
+            contribution[bonus_name] = f"{pct}%"
 
     return {
         "final_verdict":         final_verdict,
@@ -1514,4 +1624,5 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         "shodan_censys_corroboration": corroboration,
         "geo_mismatch":               geo_mismatch,
         "geo_countries":              sorted(geo_countries),
+        "spamhaus_drop":              spamhaus_drop,
     }

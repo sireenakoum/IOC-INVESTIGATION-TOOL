@@ -13,6 +13,8 @@ BASE_URL = "https://urlscan.io/api/v1/search/"
 def urlscan_check(indicator, ind_type):
     if not URLSCAN_API_KEY:
         return None
+    if ind_type not in ("ip", "domain"):
+        return None
 
     cached = cache_get(indicator, "urlscan")
     if cached:

@@ -3,7 +3,8 @@ import json
 import datetime
 import os
 
-DB_PATH = "ioc_cache.db"
+DB_PATH = os.environ.get("IOC_DB_PATH", "ioc_cache.db")
+SILENT = False
 
 def cache_history():
     init_db()
@@ -49,7 +50,8 @@ def cache_get(ioc, source):
 
     cached_at = datetime.datetime.fromisoformat(row[1])
     age_days  = (datetime.datetime.now() - cached_at).days
-    print(f"  [CACHE HIT] {source} — cached {age_days} day(s) ago")
+    if not SILENT:
+        print(f"  [CACHE HIT] {source} — cached {age_days} day(s) ago")
     return json.loads(row[0])
 
 def clear_cache():
@@ -84,4 +86,5 @@ def cache_set(ioc, source, result):
     ))
     conn.commit()
     conn.close()
-    print(f"  [CACHE SET] {source} result saved for {ioc}")
+    if not SILENT:
+        print(f"  [CACHE SET] {source} result saved for {ioc}")

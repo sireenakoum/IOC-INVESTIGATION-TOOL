@@ -25,10 +25,7 @@ def censys_check(indicator, ind_type):
     headers = {"Authorization": f"Bearer {CENSYS_API_KEY}"}
 
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-    except requests.exceptions.Timeout:
-        print("  [Censys] Request timed out")
-        return None
+        response = requests.get(url, headers=headers)
     except requests.exceptions.ConnectionError:
         print("  [Censys] Connection error, check your network")
         return None

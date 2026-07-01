@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Cyber-Ops Sentinel color palette */
+  --color-background:               #121316;
+  --color-surface:                  #121316;
+  --color-surface-dim:              #121316;
+  --color-surface-bright:           #38393c;
+  --color-surface-container-lowest: #0d0e11;
+  --color-surface-container-low:    #1b1b1f;
+  --color-surface-container:        #1f1f23;
+  --color-surface-container-high:   #292a2d;
+  --color-surface-container-highest:#343538;
+  --color-surface-variant:          #343538;
+
+  --color-on-background:            #e3e2e6;
+  --color-on-surface:               #e3e2e6;
+  --color-on-surface-variant:       #bbcabf;
+
+  --color-primary:                  #4edea3;
+  --color-primary-fixed:            #6ffbbe;
+  --color-primary-fixed-dim:        #4edea3;
+  --color-on-primary:               #003824;
+  --color-primary-container:        #10b981;
+  --color-on-primary-container:     #00422b;
+
+  --color-secondary:                #4cd7f6;
+  --color-secondary-container:      #03b5d3;
+  --color-on-secondary:             #003640;
+
+  --color-tertiary:                 #ffb95f;
+  --color-tertiary-fixed-dim:       #ffb95f;
+  --color-tertiary-container:       #e29100;
+
+  --color-error:                    #ffb4ab;
+  --color-error-container:          #93000a;
+  --color-on-error:                 #690005;
+
+  --color-outline:                  #86948a;
+  --color-outline-variant:          #3c4a42;
+
+  --color-inverse-surface:          #e3e2e6;
+  --color-inverse-on-surface:       #303034;
+  --color-inverse-primary:          #006c49;
+
+  /* Typography scale */
+  --font-family-sans:    'Geist', system-ui, sans-serif;
+  --font-family-mono:    'JetBrains Mono', monospace;
+
+  --font-size-headline-lg:   32px;
+  --font-size-headline-md:   24px;
+  --font-size-headline-sm:   18px;
+  --font-size-body-md:       14px;
+  --font-size-body-sm:       12px;
+  --font-size-data-lg:       14px;
+  --font-size-data-sm:       12px;
+  --font-size-label-caps:    10px;
+}
+
+/* ── Base ── */
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Geist', system-ui, sans-serif;
+  background: #121316;
+  color: #e3e2e6;
+}
+
+/* ── Material Symbols ── */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+  user-select: none;
+}
+.material-symbols-filled {
+  font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  font-family: 'Material Symbols Outlined';
+  vertical-align: middle;
+  user-select: none;
+}
+
+/* ── Cards ── */
+.card {
+  background: #1f1f23;
+  border: 1px solid #3c4a42;
+  border-radius: 4px;
+}
+
+.card-glass {
+  background: rgba(27, 27, 31, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid #3c4a42;
+  border-radius: 4px;
+}
+
+/* ── Animations ── */
+@keyframes scanline {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes pulse-danger {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-ring {
+  0%      { transform: scale(0.33); opacity: 1; }
+  80%,100%{ opacity: 0; }
+}
+
+/* ── Utility classes ── */
+.scanline-effect {
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(to bottom, transparent, rgba(78, 222, 163, 0.025), transparent);
+  height: 120px;
+  width: 100%;
+  animation: scanline 10s linear infinite;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #1f1f23 25%, #292a2d 50%, #1f1f23 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+.pulse-danger {
+  animation: pulse-danger 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.fade-slide-in {
+  animation: fadeSlideIn 0.3s ease forwards;
+}
+
+/* ── Custom scrollbar ── */
+::-webkit-scrollbar          { width: 4px; height: 4px; }
+::-webkit-scrollbar-track    { background: #0d0e11; }
+::-webkit-scrollbar-thumb    { background: #3c4a42; border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: #4edea3; }
+
+/* ── Summary/details reset ── */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+
+/* ── Mono font helper ── */
+.font-mono { font-family: 'JetBrains Mono', monospace; }

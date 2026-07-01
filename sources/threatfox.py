@@ -17,7 +17,6 @@ def threatfox_check(indicator, ind_type):
 
     cached = cache_get(indicator, "threatfox")
     if cached:
-        print(f"  [CACHE HIT] threatfox — cached 0 day(s) ago")
         return cached
 
     if not THREATFOX_API_KEY:
@@ -26,10 +25,7 @@ def threatfox_check(indicator, ind_type):
     headers = {"Auth-Key": THREATFOX_API_KEY}
     payload = {"query": "search_ioc", "search_term": indicator, "exact_match": True}
     try:
-        response = requests.post(BASE_URL, headers=headers, json=payload, timeout=15)
-    except requests.exceptions.Timeout:
-        print("  [ThreatFox] Request timed out — skipping, continuing scan")
-        return None
+        response = requests.post(BASE_URL, headers=headers, json=payload)
     except requests.exceptions.ConnectionError:
         print("  [ThreatFox] Connection error, check your network — skipping, continuing scan")
         return None

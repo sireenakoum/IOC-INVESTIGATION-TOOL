@@ -12,10 +12,7 @@ def _fetch_list():
     global _cache_data, _cache_timestamp
 
     try:
-        response = requests.get(BASE_URL, timeout=20)
-    except requests.exceptions.Timeout:
-        print("  [Spamhaus DROP] Request timed out")
-        return None
+        response = requests.get(BASE_URL)
     except requests.exceptions.ConnectionError:
         print("  [Spamhaus DROP] Connection error, check your network")
         return None
@@ -47,8 +44,8 @@ def _fetch_list():
 
 def _get_list():
     if _cache_data is not None and (time.monotonic() - _cache_timestamp) < _TTL_SECONDS:
-        age_days = int((time.monotonic() - _cache_timestamp) / 86400)
-        print(f"  [CACHE HIT] spamhaus — cached {age_days} day(s) ago")
+        age_hours = int((time.monotonic() - _cache_timestamp) / 3600)
+        print(f"  [CACHE HIT] spamhaus — cached {age_hours} hour(s) ago")
         return _cache_data
     return _fetch_list()
 

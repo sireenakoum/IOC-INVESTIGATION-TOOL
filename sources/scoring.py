@@ -2,13 +2,23 @@ import datetime
 import json
 
 def load_config(path="config.json"):
-    with open(path) as f:
-        config = json.load(f)
+    try:
+        with open(path) as f:
+            config = json.load(f)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"config.json not found — make sure it exists in the working directory (looked for: {path})"
+        )
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"config.json could not be parsed: {e}") from e
 
-    scoring   = config["_meta"]["scoring"]
-    aliases   = config.get("vt_engine_name_aliases", {})
-    tier1_raw = config["tier1"]["vendors"]
-    tier2_raw = config["tier2"]["vendors"]
+    try:
+        scoring   = config["_meta"]["scoring"]
+        aliases   = config.get("vt_engine_name_aliases", {})
+        tier1_raw = config["tier1"]["vendors"]
+        tier2_raw = config["tier2"]["vendors"]
+    except KeyError as e:
+        raise RuntimeError(f"config.json is missing required key: {e.args[0]!r}") from e
 
     # Build alias lookup: vt_engine_name (lower) → canonical name (lower)
     alias_lookup = {}
@@ -54,6 +64,13 @@ def load_config(path="config.json"):
         "cloud_hosting_asns":  cloud_hosting_asns,
         "vt_file_tags":             vt_file_tags,
         "abuseipdb_attack_weights": config.get("abuseipdb_attack_weights", {}),
+        "vt_relations":         config.get("vt_relations", {}),
+        "vt_comments":          config.get("vt_comments", {}),
+        "vt_ratio_bonus":       config.get("vt_ratio_bonus", {}),
+        "otx_malware_families": config.get("otx_malware_families", {}),
+        "otx_attack_ids":       config.get("otx_attack_ids", {}),
+        "otx_reputation":       config.get("otx_reputation", {}),
+        "google_intel":         config.get("google_intel", {}),
     }
 
 
@@ -87,13 +104,17 @@ NOISE_TAGS = {
 }
 
 def score_to_verdict(score):
+    # Normalize to int to match display_score = int(min(raw_total, 20)).
+    # VT tier3_points (0.5 per hit) can produce float sums; without this,
+    # 13.5 would map to "high" while the displayed score shows 13.
+    score = int(score)
     if score <= 0:
         return "clean"
     elif score <= 3:
         return "suspicious"
     elif score <= 7:
         return "low_risk"
-    elif score <= 13:
+    elif score <= 11:
         return "medium_risk"
     else:
         return "high"
@@ -204,10 +225,10 @@ def score_vt(vt, config):
         days_ago  = (now - scan_date).days
 
         qualifies_for_recency = (
-            malicious >= 2 or
-            tier1_hits >= 1 or
-            tier2_hits >= 2
-        )
+        tier1_hits >= 1 or
+        tier2_hits >= 2 or
+        malicious >= 4
+)
         if qualifies_for_recency:
             if days_ago <= 7:
                 score += 2
@@ -225,6 +246,95 @@ def score_vt(vt, config):
         if vt.get("last_scan_date"):
             breakdown.append(f"Recency skipped — no malicious detections")
 
+    # Relations scoring — communicating and downloaded files with malicious detections
+    relations = vt.get("relations") or {}
+    if relations:
+        rel_cfg  = config.get("vt_relations", {})
+        comm_mal = sum(1 for f in (relations.get("communicating_files") or []) if f.get("malicious", 0) > 0)
+        dl_mal   = sum(1 for f in (relations.get("downloaded_files") or []) if f.get("malicious", 0) > 0)
+
+        comm_score = (rel_cfg.get("communicating_malicious_2+", 2) if comm_mal >= 2
+                      else rel_cfg.get("communicating_malicious_1", 1) if comm_mal == 1
+                      else 0)
+        dl_score   = (rel_cfg.get("downloaded_malicious_2+", 2) if dl_mal >= 2
+                      else rel_cfg.get("downloaded_malicious_1", 1) if dl_mal == 1
+                      else 0)
+
+        relations_score = min(comm_score + dl_score, rel_cfg.get("combined_cap", 3))
+        score += relations_score
+
+        if comm_mal > 0:
+            breakdown.append(f"Communicating files: {comm_mal} malicious → +{comm_score}")
+        if dl_mal > 0:
+            breakdown.append(f"Downloaded files: {dl_mal} malicious → +{dl_score}")
+        else:
+            breakdown.append(f"Downloaded files: 0 malicious → +0")
+
+    # Community vote scoring — net positive votes signal community consensus on maliciousness
+    comments = vt.get("comments") or []
+    if comments:
+        comm_cfg  = config.get("vt_comments", {})
+        total_net = sum(c.get("votes_positive", 0) - c.get("votes_negative", 0) for c in comments)
+
+        high_min = comm_cfg.get("net_votes_high_min", 5)
+        mid_min  = comm_cfg.get("net_votes_mid_min", 2)
+        neg_max  = comm_cfg.get("net_votes_neg_max", -2)
+
+        if total_net >= high_min:
+            vote_modifier = comm_cfg.get("net_votes_high", 2)
+            breakdown.append(f"Community votes: net +{total_net} → +{vote_modifier}")
+        elif total_net >= mid_min:
+            vote_modifier = comm_cfg.get("net_votes_mid", 1)
+            breakdown.append(f"Community votes: net +{total_net} → +{vote_modifier}")
+        elif total_net <= neg_max:
+            vote_modifier = comm_cfg.get("net_votes_negative", -1)
+            breakdown.append(f"Community votes: net {total_net} → {vote_modifier}")
+        else:
+            vote_modifier = 0
+
+        score = max(score + vote_modifier, 0)
+
+    # Detection ratio bonus — consensus across all engines
+    total_engines = (
+        vt.get("malicious", 0) +
+        vt.get("suspicious", 0) +
+        vt.get("harmless", 0) +
+        vt.get("undetected", 0)
+    )
+    if total_engines > 0 and vt.get("malicious", 0) > 0:
+        ratio = vt["malicious"] / total_engines
+        ratio_cfg = (config or {}).get("vt_ratio_bonus", {})
+        if ratio >= ratio_cfg.get("threshold_high", 0.70):
+            ratio_bonus = ratio_cfg.get("bonus_high", 3)
+        elif ratio >= ratio_cfg.get("threshold_mid", 0.50):
+            ratio_bonus = ratio_cfg.get("bonus_mid", 2)
+        elif ratio >= ratio_cfg.get("threshold_low", 0.30):
+            ratio_bonus = ratio_cfg.get("bonus_low", 1)
+        else:
+            ratio_bonus = 0
+        ratio_cap = ratio_cfg.get("cap", 3)
+        ratio_bonus = min(ratio_bonus, ratio_cap)
+    else:
+        ratio_bonus = 0
+        ratio = 0.0
+
+    count_maxed = malicious >= 10  # already scored +3 from count
+
+    if ratio_bonus > 0 and not count_maxed:
+        score += ratio_bonus
+        breakdown.append(
+            f"Detection ratio {ratio:.0%} ({vt['malicious']}/{total_engines}) → +{ratio_bonus}"
+        )
+    elif ratio_bonus > 0 and count_maxed:
+        breakdown.append(
+            f"Detection ratio {ratio:.0%} ({vt['malicious']}/{total_engines}) → +0  (count already maxed at +3)"
+        )
+    else:
+        if total_engines > 0 and vt.get("malicious", 0) > 0:
+            breakdown.append(
+                f"Detection ratio {ratio:.0%} ({vt['malicious']}/{total_engines}) → +0  (below threshold)"
+            )
+
     # Only assign a real verdict if there's something to judge; avoids false "clean" on empty responses
     has_data = (
         malicious > 0 or
@@ -234,7 +344,7 @@ def score_vt(vt, config):
         undetected > 0
     )
 
-    score = min(score, 15)
+    score = min(score, 18)
 
     verdict = score_to_verdict(score) if has_data else "no_data"
 
@@ -282,7 +392,6 @@ def score_otx(otx, config=None):
     pulse_tag_contrib  = {}
     adversary_score    = 0
     apt_hit            = False
-    family_score       = 0
     recent_pulse_found = False
     non_noise_count    = 0
 
@@ -323,27 +432,56 @@ def score_otx(otx, config=None):
                 adversary_score = min(adversary_score + 4, 4)
                 apt_hit = True
 
-        # Malware family
-        if p.get("families", []):
-            family_score = min(family_score + 2, 4)
-
     pulse_tag_score = min(pulse_tag_score, 3)  # cap per-pulse contribution
 
-    # Gate pulse count score on quality: only zero out if the entire sample is noise.
-    # pulse_details is a 5-pulse sample, so use full pulse_count when any sample pulse
-    # is non-noise; fall back to raw count when no details are available.
-    if pulse_details:
+    # Pre-check pulses_detail for qualitative content (malware family / ATT&CK technique)
+    # so pure pulse volume can't reach the top score tiers on its own — see gating below.
+    _pulses_detail_pre = otx.get("pulses_detail") or []
+    has_malware_family = any((entry.get("malware_families") or []) for entry in _pulses_detail_pre)
+    has_attack_id = any(
+        (entry.get("attack_ids") or entry.get("attack_id") or []) for entry in _pulses_detail_pre
+    )
+    has_qualitative_signal = (
+        bool(pulse_tag_contrib) or adversary_score > 0 or has_malware_family or has_attack_id
+    )
+
+    # Gate pulse count score on quality. otx.py exposes non_noise_count — the accurate
+    # count of non-noise pulses from the full pulse list, not just the 5-pulse sample.
+    # Use it when available; fall back to raw pulse_count only when no pulse details
+    # were fetched at all.
+    reported_non_noise = otx.get("non_noise_count")
+    if reported_non_noise is not None:
+        qualifying_count = reported_non_noise
+    elif pulse_details:
         qualifying_count = pulse_count if non_noise_count > 0 else 0
     else:
         qualifying_count = pulse_count
-    if qualifying_count >= 20:
-        score += 1
-        breakdown.append(f"OTX pulses {pulse_count:<8} → +1  (widely tracked, {qualifying_count} quality)")
+
+    # Pulse volume alone (no adversary/tag/family/ATT&CK signal in any sampled pulse)
+    # is capped at +1 — many pulses just mean "widely sighted," not "confirmed malicious."
+    if qualifying_count >= 10:
+        pulse_score = 4 if has_qualitative_signal else 1
+    elif qualifying_count >= 5:
+        pulse_score = 3 if has_qualitative_signal else 1
+    elif qualifying_count >= 2:
+        pulse_score = 2 if has_qualitative_signal else 1
+    elif qualifying_count >= 1:
+        pulse_score = 1
     else:
-        if pulse_count > 0 and pulse_details and qualifying_count == 0:
-            breakdown.append(f"OTX pulses {pulse_count:<8} → +0  (all noise-tagged)")
-        else:
-            breakdown.append(f"OTX pulses {pulse_count:<8} → +0")
+        pulse_score = 0
+
+    score += pulse_score
+
+    if pulse_score > 0 and qualifying_count >= 2 and not has_qualitative_signal:
+        breakdown.append(
+            f"OTX pulses {qualifying_count} (non-noise) → +{pulse_score}  (capped — volume only, no malware/adversary/ATT&CK signal)"
+        )
+    elif pulse_score > 0:
+        breakdown.append(f"OTX pulses {qualifying_count} (non-noise) → +{pulse_score}")
+    elif pulse_count > 0 and pulse_details and qualifying_count == 0:
+        breakdown.append(f"OTX pulses {pulse_count:<8} → +0  (all noise-tagged)")
+    else:
+        breakdown.append(f"OTX pulses {qualifying_count} (non-noise) → +0")
 
     if recent_pulse_found:
         score += 1
@@ -369,12 +507,6 @@ def score_otx(otx, config=None):
         breakdown.append(f"Adversary attribution ({label}) → +{adversary_score}  (cap 4)")
     else:
         breakdown.append(f"Adversary attribution        → +0")
-
-    if family_score > 0:
-        score += family_score
-        breakdown.append(f"Malware families             → +{family_score}  (cap 4)")
-    else:
-        breakdown.append(f"Malware families             → +0")
 
     pdns        = otx.get("passive_dns", [])
     latest_pdns = None
@@ -402,6 +534,83 @@ def score_otx(otx, config=None):
     else:
         breakdown.append(f"Passive DNS last seen unknown  → +0")
 
+    # Malware families and ATT&CK techniques from full pulse detail (deduplicated)
+    pulses_detail = otx.get("pulses_detail") or []
+    if pulses_detail and config:
+        fam_cfg = config.get("otx_malware_families", {})
+
+        seen_fams       = set()
+        unique_families = []
+        for entry in pulses_detail:
+            for raw_fam in (entry.get("malware_families") or []):
+                if isinstance(raw_fam, dict):
+                    fam = raw_fam.get("display_name") or raw_fam.get("family") or ""
+                else:
+                    fam = str(raw_fam).strip() if raw_fam else ""
+                if fam and fam not in seen_fams:
+                    unique_families.append(fam)
+                    seen_fams.add(fam)
+
+        n_fams = len(unique_families)
+        if n_fams >= 4:
+            fam_score = fam_cfg.get("four_plus", 3)
+        elif n_fams >= 2:
+            fam_score = fam_cfg.get("two_three", 2)
+        elif n_fams == 1:
+            fam_score = fam_cfg.get("one", 1)
+        else:
+            fam_score = 0
+
+        fam_score = min(fam_score, fam_cfg.get("cap", 3))
+        if fam_score > 0:
+            score += fam_score
+            breakdown.append(f"Malware families confirmed: {', '.join(unique_families)} → +{fam_score}")
+
+        atk_cfg      = config.get("otx_attack_ids", {})
+        high_impact  = {t.upper() for t in (atk_cfg.get("HIGH_IMPACT_TECHNIQUES") or [])}
+        seen_attacks = set()
+        unique_attacks = []
+        for entry in pulses_detail:
+            for raw_aid in (entry.get("attack_ids") or entry.get("attack_id") or []):
+                if isinstance(raw_aid, dict):
+                    aid = raw_aid.get("id") or raw_aid.get("display_name") or ""
+                else:
+                    aid = str(raw_aid).strip() if raw_aid else ""
+                if aid and aid not in seen_attacks:
+                    unique_attacks.append(aid)
+                    seen_attacks.add(aid)
+
+        n_atk = len(unique_attacks)
+        if n_atk >= 5:
+            atk_score = atk_cfg.get("five_plus", 3)
+        elif n_atk >= 2:
+            atk_score = atk_cfg.get("two_four", 2)
+        elif n_atk == 1:
+            atk_score = atk_cfg.get("one", 1)
+        else:
+            atk_score = 0
+
+        if atk_score > 0 and any(a.upper() in high_impact for a in unique_attacks):
+            atk_score += atk_cfg.get("high_impact_bonus", 1)
+
+        atk_score = min(atk_score, atk_cfg.get("cap", 3))
+        if atk_score > 0:
+            score += atk_score
+            breakdown.append(f"ATT&CK techniques: {', '.join(unique_attacks)} → +{atk_score}")
+
+    if config:
+        rep_cfg       = config.get("otx_reputation", {})
+        threat_scores = rep_cfg.get("threat_type_scores", {})
+        rep_cap       = rep_cfg.get("cap", 4)
+        rep_type      = otx.get("reputation_threat_type")
+        if rep_type:
+            modifier = min(threat_scores.get(rep_type.lower(), 0), rep_cap)
+            if modifier > 0:
+                score += modifier
+                breakdown.append(f"OTX reputation: {rep_type} → +{modifier}")
+            else:
+                breakdown.append(f"OTX reputation type: {rep_type} (unscored)")
+
     score = min(score, 15)
 
     # reputation is 0 for unknown IPs, negative means OTX community flagged it
@@ -421,14 +630,15 @@ def score_otx(otx, config=None):
 def score_abuse(abuse, config=None, asn=None):
     """Score AbuseIPDB data. Returns per-source result dict.
 
-    Scoring layers (additive, capped at 15):
-      1. Distinct reporters — independent sources corroborate the abuse
-      2. Recency            — recent reports are more actionable
-      3. Tor exit node      — anonymization proxy adds baseline risk
-      4. Attack types       — high-severity categories (phishing, hacking) score more than noisy ones (port scan)
+    Scoring is quality-driven: attack type tags are the primary signal.
+    Supporting signals (confidence, recency, Tor) contribute but are capped
+    so attack types carry the weight without fully determining the verdict alone.
 
-    AbuseIPDB's confidence score is shown informally but not used for
-    scoring — it is often stale or miscalibrated for shared infrastructure.
+    Scoring layers (additive, capped at 15):
+      1. Confidence score  — small corroborating signal (+1 max)
+      2. Recency           — ungated; recent activity is more actionable
+      3. Tor exit node     — anonymization proxy adds baseline risk
+      4. Attack types      — primary driver; weighted by severity, capped at 8
     """
 
     if not abuse:
@@ -442,56 +652,31 @@ def score_abuse(abuse, config=None, asn=None):
     is_tor         = abuse.get("is_tor", False)
     last_reported  = abuse.get("last_reported")
 
-    # Show the AbuseIPDB confidence score informally but do not use
-    # it for scoring — it is often stale or miscalibrated for shared
-    # infrastructure. Score from raw report data instead.
+    # Confidence score — small corroborating signal only
     if abuse_score >= 80:
-        score += 2
-        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +2  (high confidence)")
+        score += 1
+        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +1")
     elif abuse_score >= 40:
         score += 1
-        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +1  (moderate confidence)")
+        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +1  (moderate)")
     else:
-        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +0  (low — not scored)")
+        breakdown.append(f"AbuseIPDB confidence {abuse_score}%  → +0  (low)")
 
-    if distinct_users >= 500:
-        score += 5
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +5  (extraordinary — mass reporting)")
-    elif distinct_users >= 100:
-        score += 4
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +4  (overwhelming corroboration)")
-    elif distinct_users >= 50:
-        score += 3
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +3  (widely reported)")
-    elif distinct_users >= 20:
-        score += 2
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +2")
-    elif distinct_users >= 5:
-        score += 1
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +1")
-    elif distinct_users >= 2:
-        score += 0
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +0  (too few reporters)")
-    else:
-        breakdown.append(f"Distinct reporters {distinct_users:<3}    → +0")
-
+    # Recency — ungated, recent reports are more actionable regardless of volume
     if last_reported:
         try:
             last_dt  = datetime.datetime.fromisoformat(last_reported[:19])
             days_ago = (datetime.datetime.now() - last_dt).days
-            if distinct_users >= 10:
-                if days_ago <= 7:
-                    score += 2
-                    breakdown.append(f"Last reported {days_ago} days ago       → +2  (very recent)")
-                elif days_ago <= 30:
-                    score += 1
-                    breakdown.append(f"Last reported {days_ago} days ago       → +1  (recent)")
-                elif days_ago <= 90:
-                    breakdown.append(f"Last reported {days_ago} days ago       → +0")
-                else:
-                    breakdown.append(f"Last reported {days_ago} days ago       → +0  (old)")
+            if days_ago <= 7:
+                score += 2
+                breakdown.append(f"Last reported {days_ago} days ago       → +2  (very recent)")
+            elif days_ago <= 30:
+                score += 1
+                breakdown.append(f"Last reported {days_ago} days ago       → +1  (recent)")
+            elif days_ago <= 90:
+                breakdown.append(f"Last reported {days_ago} days ago       → +0")
             else:
-                breakdown.append(f"→ +0 (recency skipped — too few reporters)")
+                breakdown.append(f"Last reported {days_ago} days ago       → +0  (old)")
         except (ValueError, TypeError):
             breakdown.append(f"Last reported date unknown  → +0")
     else:
@@ -503,6 +688,9 @@ def score_abuse(abuse, config=None, asn=None):
     else:
         breakdown.append(f"Tor exit node               → +0")
 
+    # Attack types — primary driver, capped at 8 so supporting signals still matter
+    NOISE_CATEGORIES = {"Port Scan", "Ping", "Open Proxy"}
+
     attack_weights = (config or {}).get("abuseipdb_attack_weights", {})
     if attack_weights and abuse.get("top_categories"):
         high_cfg   = attack_weights.get("high", {})
@@ -513,11 +701,15 @@ def score_abuse(abuse, config=None, asn=None):
         medium_cats = set(medium_cfg.get("categories", []))
         ignore_cats = set(ignore_cfg.get("categories", []))
 
-        high_score   = 0
-        medium_score = 0
-        matched_cats = []
+        high_score     = 0
+        medium_score   = 0
+        matched_cats   = []
+        noise_excluded = []
 
         for cat_name, _ in abuse.get("top_categories", []):
+            if cat_name in NOISE_CATEGORIES:
+                noise_excluded.append(cat_name)
+                continue
             if cat_name in ignore_cats:
                 continue
             elif cat_name in high_cats:
@@ -529,11 +721,14 @@ def score_abuse(abuse, config=None, asn=None):
 
         high_score   = min(high_score,   high_cfg.get("cap", 4))
         medium_score = min(medium_score, medium_cfg.get("cap", 2))
-        attack_bonus = high_score + medium_score
+        attack_bonus = min(high_score + medium_score, 8)  # primary driver cap
+
         cdn_asns_cfg = (config or {}).get("cdn_asns", {})
         if asn and asn in cdn_asns_cfg:
             attack_bonus = min(attack_bonus, 3)
 
+        if noise_excluded:
+            breakdown.append(f"{', '.join(noise_excluded)} excluded (scanner noise) → +0")
         if matched_cats:
             score += attack_bonus
             breakdown.append(f"Attack types [{', '.join(matched_cats)}] → +{attack_bonus}")
@@ -1368,9 +1563,186 @@ def score_urlscan(urlscan, config=None):
     }
 
 
+def score_google_intel(gi, config=None):
+    """Score Google Threat Intel data. Returns per-source result dict.
+
+    Scoring layers (additive, capped at 10):
+      1. Malware families found     — cap +4
+      2. APT actors found           — cap +4
+      3. ATT&CK technique IDs found — cap +3
+      4. CVEs mentioned             — cap +2
+      5. Severity keywords          — cap +3
+      6. Tier-1 source bonus        — cap +2
+      Co-mentioned IOCs go to pivot only — not scored here.
+    Combined cap: 10.
+    """
+    if not gi:
+        return {"verdict": "no_data", "score": 0,
+                "evidence_count": 0, "has_data": False, "breakdown": []}
+
+    gi_cfg        = (config or {}).get("google_intel", {}) if config else {}
+    scoring       = gi_cfg.get("scoring", {})
+
+    malware_families = gi.get("malware_families") or []
+    apt_actors       = gi.get("apt_actors") or []
+    attack_ids       = gi.get("attack_ids") or []
+    cve_ids          = gi.get("cve_ids") or []
+    severity_hits    = gi.get("severity_hits") or []
+    co_iocs          = gi.get("co_iocs") or {}
+    co_ips           = co_iocs.get("ips") or []
+    co_domains       = co_iocs.get("domains") or []
+    co_hashes        = co_iocs.get("hashes") or []
+    source_tiers     = gi.get("source_tiers") or {}
+    search_method    = gi.get("search_method", "none")
+    urls_fetched     = gi.get("urls_fetched") or []
+
+    # Malware families score
+    n_mal = len(malware_families)
+    if n_mal >= 4:   malware_score = scoring.get("malware_four_plus", 4)
+    elif n_mal >= 2: malware_score = scoring.get("malware_two_three", 3)
+    elif n_mal == 1: malware_score = scoring.get("malware_one", 2)
+    else:            malware_score = 0
+    malware_score = min(malware_score, scoring.get("malware_cap", 4))
+
+    # APT actor score
+    n_apt = len(apt_actors)
+    if n_apt >= 2:   apt_score = 4
+    elif n_apt == 1: apt_score = 3
+    else:            apt_score = 0
+    apt_score = min(apt_score, 4)
+
+    # ATT&CK score
+    n_atk = len(attack_ids)
+    if n_atk >= 4:   attck_score = scoring.get("attck_four_plus", 3)
+    elif n_atk >= 2: attck_score = scoring.get("attck_two_three", 2)
+    elif n_atk == 1: attck_score = scoring.get("attck_one", 1)
+    else:            attck_score = 0
+    attck_score = min(attck_score, scoring.get("attck_cap", 3))
+
+    # CVE score
+    n_cve = len(cve_ids)
+    if n_cve >= 3:   cve_score = 2
+    elif n_cve >= 1: cve_score = 1
+    else:            cve_score = 0
+    cve_score = min(cve_score, 2)
+
+    # Severity score
+    severity_score = min(len(severity_hits), 3)
+
+    # Tier-1 source bonus — only if signals found
+    tier1_count = sum(1 for t in source_tiers.values() if t == 1)
+    tier2_count = sum(1 for t in source_tiers.values() if t == 2)
+    has_signals = bool(malware_families or apt_actors or attack_ids or cve_ids)
+    if tier1_count >= 2 and has_signals:   tier_bonus = 2
+    elif tier1_count >= 1 and has_signals: tier_bonus = 1
+    else:                                   tier_bonus = 0
+
+    cap   = gi_cfg.get("cap", 10)
+    score = min(
+        malware_score + apt_score + attck_score + cve_score + severity_score + tier_bonus,
+        cap
+    )
+
+    breakdown = []
+    breakdown.append(f"Sources fetched: {len(urls_fetched)} ({tier1_count} tier-1, {tier2_count} tier-2)")
+
+    if malware_families:
+        breakdown.append(f"Malware families: {', '.join(malware_families)} → +{malware_score}")
+    else:
+        breakdown.append(f"Malware families: none → +0")
+
+    if apt_actors:
+        breakdown.append(f"APT actors: {', '.join(apt_actors)} → +{apt_score}")
+    else:
+        breakdown.append(f"APT actors: none → +0")
+
+    if attack_ids:
+        breakdown.append(f"ATT&CK techniques: {', '.join(attack_ids)} → +{attck_score}")
+    else:
+        breakdown.append(f"ATT&CK techniques: none → +0")
+
+    if cve_ids:
+        breakdown.append(f"CVEs found: {', '.join(list(cve_ids)[:5])} → +{cve_score}")
+    else:
+        breakdown.append(f"CVEs found: none → +0")
+
+    if severity_hits:
+        breakdown.append(f"Severity signals: {', '.join(list(severity_hits)[:3])} → +{severity_score}")
+    else:
+        breakdown.append(f"Severity signals: none → +0")
+
+    if tier_bonus > 0:
+        breakdown.append(f"Tier-1 source bonus → +{tier_bonus}")
+
+    ioc_parts = []
+    if co_ips:     ioc_parts.append(f"{len(co_ips)} IP{'s' if len(co_ips) != 1 else ''}")
+    if co_domains: ioc_parts.append(f"{len(co_domains)} domain{'s' if len(co_domains) != 1 else ''}")
+    if co_hashes:  ioc_parts.append(f"{len(co_hashes)} hash{'es' if len(co_hashes) != 1 else ''}")
+    if ioc_parts:
+        breakdown.append(f"Co-mentioned IOCs: {', '.join(ioc_parts)} → sent to pivot scan")
+    else:
+        breakdown.append(f"Co-mentioned IOCs: none → sent to pivot scan")
+
+    if "ScaleSerp" in search_method:
+        breakdown.append("Search method: ScaleSerp (Google dorks)")
+    elif "SerpApi" in search_method:
+        breakdown.append("Search method: SerpApi (Google dorks)")
+    elif search_method and search_method != "none":
+        breakdown.append("Search method: scraper fallback")
+    else:
+        breakdown.append("Search method: none")
+
+    has_data       = bool(urls_fetched)
+    evidence_count = n_mal + n_apt + n_atk + n_cve + len(severity_hits)
+    verdict        = score_to_verdict(score) if has_data else "no_data"
+
+    return {
+        "verdict":        verdict,
+        "score":          score,
+        "evidence_count": evidence_count,
+        "has_data":       has_data,
+        "breakdown":      breakdown,
+    }
+
+
+def score_pivot(pivot_result, config):
+    """Score pivot IOC scan results. Returns {score, has_data, breakdown}."""
+    if not pivot_result:
+        return {"score": 0, "has_data": False, "breakdown": []}
+
+    pivot_cfg = (config or {}).get("pivot", {})
+    mal_bonus  = pivot_cfg.get("malicious_bonus", 2)
+    mal_cap    = pivot_cfg.get("malicious_cap", 6)
+    sus_bonus  = pivot_cfg.get("suspicious_bonus", 1)
+    sus_cap    = pivot_cfg.get("suspicious_cap", 2)
+    total_cap  = pivot_cfg.get("total_cap", 6)
+
+    malicious_pivots  = pivot_result.get("malicious_pivots", [])
+    suspicious_pivots = pivot_result.get("suspicious_pivots", [])
+    scanned           = pivot_result.get("pivot_iocs", [])
+
+    if not scanned:
+        return {"score": 0, "has_data": False, "breakdown": []}
+
+    mal_score = min(len(malicious_pivots) * mal_bonus, mal_cap)
+    sus_score = min(len(suspicious_pivots) * sus_bonus, sus_cap)
+    total     = min(mal_score + sus_score, total_cap)
+
+    breakdown = []
+    if malicious_pivots:
+        breakdown.append(f"Malicious pivots {len(malicious_pivots):<4} → +{mal_score}  (cap {mal_cap})")
+    if suspicious_pivots:
+        breakdown.append(f"Suspicious pivots {len(suspicious_pivots):<3} → +{sus_score}  (cap {sus_cap})")
+    if not malicious_pivots and not suspicious_pivots:
+        breakdown.append(f"Pivot IOCs {len(scanned)} scanned     → +0  (all clean or no data)")
+
+    return {"score": total, "has_data": True, "breakdown": breakdown}
+
+
 def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
                      censys=None, greynoise=None, urlhaus=None, hybrid=None,
-                     urlscan=None, spamhaus_drop=None, threatfox=None, config=None):
+                     urlscan=None, spamhaus_drop=None, threatfox=None,
+                     google_intel=None, config=None, pivot_result=None):
     """Combine per-source scores into a single final verdict using a plain average.
 
     Gated sources (CDN/cloud ASNs with score==0) are excluded from the average.
@@ -1394,17 +1766,19 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     threatfox_result = score_threatfox(threatfox, config)
     hybrid_result    = score_hybrid(hybrid, config)
     urlscan_result   = score_urlscan(urlscan, config)
+    gi_result        = score_google_intel(google_intel, config)
     sources = {
-        "VirusTotal": vt_result,
-        "OTX":        otx_result,
-        "AbuseIPDB":  abuse_result,
-        "Shodan":     shodan_result,
-        "Censys":     censys_result,
-        "GreyNoise":  greynoise_result,
-        "URLhaus":    urlhaus_result,
-        "ThreatFox":  threatfox_result,
-        "Hybrid":     hybrid_result,
-        "URLScan":    urlscan_result,
+        "VirusTotal":   vt_result,
+        "OTX":          otx_result,
+        "AbuseIPDB":    abuse_result,
+        "Shodan":       shodan_result,
+        "Censys":       censys_result,
+        "GreyNoise":    greynoise_result,
+        "URLhaus":      urlhaus_result,
+        "ThreatFox":    threatfox_result,
+        "Hybrid":       hybrid_result,
+        "URLScan":      urlscan_result,
+        "Google Intel": gi_result,
     }
 
     # Only include sources that returned real data so no-data sources don't drag the verdict down.
@@ -1493,17 +1867,17 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         final_score    = min(final_score + spamhaus_bonus, 20)
         final_verdict  = score_to_verdict(final_score)
 
+    pivot_scored = score_pivot(pivot_result, config)
+    pivot_bonus  = pivot_scored["score"]
+    if pivot_bonus > 0:
+        final_score   = min(final_score + pivot_bonus, 20)
+        final_verdict = score_to_verdict(final_score)
+
     vt_country      = (vt or {}).get("country", "")
     censys_country  = (censys or {}).get("country", "") if isinstance(censys, dict) else ""
     shodan_country  = (shodan or {}).get("country", "") if isinstance(shodan, dict) else ""
     geo_countries   = {c.upper() for c in [vt_country, censys_country, shodan_country] if c}
     geo_mismatch    = len(geo_countries) > 1
-
-    # Rule 2: High verdict requires at least 2 active sources with score >= 5
-    if final_verdict == "high":
-        strong_sources = [r for r in active.values() if r["score"] >= 5]
-        if len(strong_sources) < 2:
-            final_verdict = "medium_risk"
 
     for name, r in active.items():
         if r["verdict"] == "high":
@@ -1511,10 +1885,19 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
                 final_verdict = "medium_risk"
                 break
 
-    triggered_by        = [
-        name for name, r in active.items()
-        if VERDICT_ORDER.get(r["verdict"], 0) >= VERDICT_ORDER.get(final_verdict, 0) - 1
-    ]
+    _active_raw = sum(r["score"] for r in active.values())
+    triggered_by = []
+    for name, r in active.items():
+        verdict_qualifies = VERDICT_ORDER.get(r["verdict"], 0) >= VERDICT_ORDER.get(final_verdict, 0) - 1
+        score_qualifies   = r["score"] >= 3
+        pct_qualifies     = _active_raw > 0 and (r["score"] / _active_raw * 100) >= 15
+        if verdict_qualifies or score_qualifies or pct_qualifies:
+            triggered_by.append(name)
+    if pivot_bonus >= 4:
+        if "Pivot" not in triggered_by:
+            triggered_by.append("Pivot")
+    elif pivot_bonus > 0:
+        pass  # handled in display below
     corroboration_count = len(triggered_by)
     active_count        = len(active)
 
@@ -1565,6 +1948,12 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             full_breakdown.append(f"SSH host key fingerprint match → +{corroboration['ssh_bonus']}")
         full_breakdown.append(f"Corroboration total (cap 4) → +{corr_bonus}")
 
+    if pivot_scored["has_data"]:
+        full_breakdown.append(f"── Pivot ──")
+        full_breakdown.extend((pivot_result or {}).get("pivot_detail", []))
+        if pivot_bonus > 0:
+            full_breakdown.append(f"Pivot bonus total → +{pivot_bonus}")
+
     # Build flat score_components including all bonus entries so percentages
     # reflect what actually drove the final score, not just source subtotals.
     score_components = {name: r["score"] for name, r in sources.items() if r["has_data"]}
@@ -1574,6 +1963,8 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         score_components["WHOIS"] = whois_modifier
     if corr_bonus > 0:
         score_components["Corroboration"] = corr_bonus
+    if pivot_bonus > 0:
+        score_components["Pivot"] = pivot_bonus
 
     raw_total     = sum(score_components.values())
     display_score = int(min(raw_total, 20))
@@ -1587,7 +1978,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             pct = round(max(r["score"], 0) / raw_total * 100)
             contribution[name] = f"{pct}%"
 
-    for bonus_name in ("Spamhaus DROP", "WHOIS", "Corroboration"):
+    for bonus_name in ("Spamhaus DROP", "WHOIS", "Corroboration", "Pivot"):
         if bonus_name in score_components:
             pct = round(score_components[bonus_name] / raw_total * 100)
             contribution[bonus_name] = f"{pct}%"
@@ -1625,4 +2016,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         "geo_mismatch":               geo_mismatch,
         "geo_countries":              sorted(geo_countries),
         "spamhaus_drop":              spamhaus_drop,
+        "pivot_influenced":           pivot_bonus >= 4,
+        "pivot_bonus":                pivot_bonus,
     }

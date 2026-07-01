@@ -31,7 +31,6 @@ def hybrid_check(indicator, ind_type):
                 "https://www.hybrid-analysis.com/api/v2/search/hash",
                 headers=headers,
                 params={"hash": indicator},
-                timeout=15,
             )
         else:
             field    = "host" if ind_type == "ip" else "domain"
@@ -39,11 +38,7 @@ def hybrid_check(indicator, ind_type):
                 "https://www.hybrid-analysis.com/api/v2/search/terms",
                 headers=headers,
                 data={field: indicator},
-                timeout=15,
             )
-    except requests.exceptions.Timeout:
-        print("  [Hybrid Analysis] Request timed out")
-        return None
     except requests.exceptions.ConnectionError:
         print("  [Hybrid Analysis] Connection error, check your network")
         return None
@@ -72,7 +67,7 @@ def hybrid_check(indicator, ind_type):
 
     if report_id and (report.get("threat_score") or 0) >= 50:
         detail_url  = f"https://www.hybrid-analysis.com/api/v2/report/{report_id}/summary"
-        detail_resp = requests.get(detail_url, headers=headers, timeout=15)
+        detail_resp = requests.get(detail_url, headers=headers)
         if "application/json" not in detail_resp.headers.get("content-type", ""):
             pass  # skip detail enrichment
         elif detail_resp.status_code == 200:

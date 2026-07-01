@@ -24,10 +24,7 @@ def urlhaus_check(indicator, ind_type):
 
     headers = {"Auth-Key": URLHAUS_API_KEY}
     try:
-        response = requests.post(BASE_URL, headers=headers, data={"host": indicator}, timeout=15)
-    except requests.exceptions.Timeout:
-        print("  [URLhaus] Request timed out")
-        return None
+        response = requests.post(BASE_URL, headers=headers, data={"host": indicator})
     except requests.exceptions.ConnectionError:
         print("  [URLhaus] Connection error, check your network")
         return None

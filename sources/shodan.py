@@ -17,10 +17,7 @@ def shodan_check(indicator,ind_type):
     url = f"{BASE_URL}/shodan/host/{indicator}"
     
     try:
-        response= requests.get(url,params={"key":SHODAN_API_KEY},timeout=10,)
-    except requests.exceptions.Timeout:
-        print ("[Shodan] Request timed out")
-        return None
+        response= requests.get(url,params={"key":SHODAN_API_KEY})
     except requests.exceptions.ConnectionError:
         print("[Shodan] Connection error, check your network")
         return None

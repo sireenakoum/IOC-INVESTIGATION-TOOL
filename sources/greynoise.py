@@ -15,10 +15,7 @@ def greynoise_check(indicator, ind_type):
     url = f"{BASE_URL}/{indicator}"
 
     try:
-        response = requests.get(url, timeout=15)
-    except requests.exceptions.Timeout:
-        print("  [GreyNoise] Request timed out")
-        return None
+        response = requests.get(url)
     except requests.exceptions.ConnectionError:
         print("  [GreyNoise] Connection error, check your network")
         return None

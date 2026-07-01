@@ -48,7 +48,8 @@ def init_history_table():
     conn.commit()
     for col, col_type in [("whois_result", "TEXT"), ("score", "REAL"), ("per_source", "TEXT"), ("censys_result", "TEXT"),
                           ("greynoise_result", "TEXT"), ("urlhaus_result", "TEXT"), ("urlscan_result", "TEXT"), ("hybrid_result", "TEXT"),
-                          ("spamhaus_drop_result", "TEXT"), ("threatfox_result", "TEXT")]:
+                          ("spamhaus_drop_result", "TEXT"), ("threatfox_result", "TEXT"), ("google_intel_result", "TEXT"),
+                          ("pivot_result", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE history ADD COLUMN {col} {col_type}")
             conn.commit()
@@ -57,32 +58,35 @@ def init_history_table():
     conn.close()
 
 def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result=None, score=None, per_source=None, censys_result=None,
-                 greynoise_result=None, urlhaus_result=None, urlscan_result=None, hybrid_result=None, spamhaus_drop_result=None, threatfox_result=None):
+                 greynoise_result=None, urlhaus_result=None, urlscan_result=None, hybrid_result=None, spamhaus_drop_result=None, threatfox_result=None,
+                 google_intel_result=None, pivot_result=None):
     init_history_table()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO history (timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result, spamhaus_drop_result, threatfox_result)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO history (timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result, spamhaus_drop_result, threatfox_result, google_intel_result, pivot_result)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(indicator) DO UPDATE SET
-            timestamp            = excluded.timestamp,
-            vt_result            = excluded.vt_result,
-            otx_result           = excluded.otx_result,
-            abuse_result         = excluded.abuse_result,
-            shodan_result        = excluded.shodan_result,
-            verdict              = excluded.verdict,
-            whois_result         = excluded.whois_result,
-            score                = excluded.score,
-            per_source           = excluded.per_source,
-            censys_result        = excluded.censys_result,
-            greynoise_result     = excluded.greynoise_result,
-            urlhaus_result       = excluded.urlhaus_result,
-            urlscan_result       = excluded.urlscan_result,
-            hybrid_result        = excluded.hybrid_result,
-            spamhaus_drop_result = excluded.spamhaus_drop_result,
-            threatfox_result     = excluded.threatfox_result
+            timestamp             = excluded.timestamp,
+            vt_result             = excluded.vt_result,
+            otx_result            = excluded.otx_result,
+            abuse_result          = excluded.abuse_result,
+            shodan_result         = excluded.shodan_result,
+            verdict               = excluded.verdict,
+            whois_result          = excluded.whois_result,
+            score                 = excluded.score,
+            per_source            = excluded.per_source,
+            censys_result         = excluded.censys_result,
+            greynoise_result      = excluded.greynoise_result,
+            urlhaus_result        = excluded.urlhaus_result,
+            urlscan_result        = excluded.urlscan_result,
+            hybrid_result         = excluded.hybrid_result,
+            spamhaus_drop_result  = excluded.spamhaus_drop_result,
+            threatfox_result      = excluded.threatfox_result,
+            google_intel_result   = excluded.google_intel_result,
+            pivot_result          = excluded.pivot_result
     """, (
-        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         indicator,
         json.dumps(vt_result),
         json.dumps(otx_result),
@@ -99,6 +103,8 @@ def save_results(indicator, vt_result, otx_result, abuse_result, shodan_result, 
         json.dumps(hybrid_result),
         json.dumps(spamhaus_drop_result),
         json.dumps(threatfox_result),
+        json.dumps(google_intel_result),
+        json.dumps(pivot_result),
     ))
     conn.commit()
 
@@ -137,7 +143,7 @@ def get_last_result(indicator):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result, spamhaus_drop_result, threatfox_result
+        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result, spamhaus_drop_result, threatfox_result, google_intel_result, pivot_result
         FROM history
         WHERE indicator = ?
         ORDER BY id DESC
@@ -147,25 +153,27 @@ def get_last_result(indicator):
     conn.close()
     if not row:
         return None
-    timestamp, ind, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, score, per_source_json, censys_json, greynoise_json, urlhaus_json, urlscan_json, hybrid_json, spamhaus_json, threatfox_json = row
+    timestamp, ind, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, score, per_source_json, censys_json, greynoise_json, urlhaus_json, urlscan_json, hybrid_json, spamhaus_json, threatfox_json, gi_json, pivot_json = row
     return {
         "timestamp":    timestamp,
         "indicator":    ind,
-        "vt":           json.loads(vt_json)           if vt_json           else None,
-        "otx":          json.loads(otx_json)          if otx_json          else None,
-        "abuse":        json.loads(abuse_json)         if abuse_json         else None,
-        "shodan":       json.loads(shodan_json)        if shodan_json        else None,
-        "whois":        json.loads(whois_json)         if whois_json         else None,
-        "censys":       json.loads(censys_json)        if censys_json        else None,
-        "greynoise":    json.loads(greynoise_json)    if greynoise_json    else None,
-        "urlhaus":      json.loads(urlhaus_json)      if urlhaus_json      else None,
-        "urlscan":      json.loads(urlscan_json)      if urlscan_json      else None,
-        "hybrid":       json.loads(hybrid_json)       if hybrid_json       else None,
-        "spamhaus_drop": json.loads(spamhaus_json)   if spamhaus_json     else None,
-        "threatfox":    json.loads(threatfox_json)   if threatfox_json    else None,
+        "vt":           json.loads(vt_json)          if vt_json          else None,
+        "otx":          json.loads(otx_json)         if otx_json         else None,
+        "abuse":        json.loads(abuse_json)        if abuse_json        else None,
+        "shodan":       json.loads(shodan_json)       if shodan_json       else None,
+        "whois":        json.loads(whois_json)        if whois_json        else None,
+        "censys":       json.loads(censys_json)       if censys_json       else None,
+        "greynoise":    json.loads(greynoise_json)   if greynoise_json    else None,
+        "urlhaus":      json.loads(urlhaus_json)     if urlhaus_json      else None,
+        "urlscan":      json.loads(urlscan_json)     if urlscan_json      else None,
+        "hybrid":       json.loads(hybrid_json)      if hybrid_json       else None,
+        "spamhaus_drop": json.loads(spamhaus_json)  if spamhaus_json     else None,
+        "threatfox":    json.loads(threatfox_json)  if threatfox_json    else None,
+        "google_intel": json.loads(gi_json)          if gi_json           else None,
         "verdict":      verdict,
         "score":        score,
-        "per_source":   json.loads(per_source_json)  if per_source_json    else {},
+        "per_source":   json.loads(per_source_json) if per_source_json   else {},
+        "pivot_result": json.loads(pivot_json)       if pivot_json        else None,
     }
 
 
@@ -198,6 +206,14 @@ def compare_results(old, new):
     if source_changes:
         changes["sources"] = source_changes
 
+    old_pivot = old.get("pivot_result")
+    new_pivot = new.get("pivot_result")
+    if old_pivot and new_pivot:
+        old_mal = old_pivot.get("malicious_pivots", [])
+        new_mal = new_pivot.get("malicious_pivots", [])
+        if old_mal != new_mal:
+            changes["pivot"] = {"from": old_mal, "to": new_mal}
+
     return changes
 
 
@@ -207,7 +223,7 @@ def get_history_entry(n):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result, spamhaus_drop_result, threatfox_result
+        SELECT timestamp, indicator, vt_result, otx_result, abuse_result, shodan_result, verdict, whois_result, score, per_source, censys_result, greynoise_result, urlhaus_result, urlscan_result, hybrid_result, spamhaus_drop_result, threatfox_result, google_intel_result, pivot_result
         FROM history
         ORDER BY id DESC
         LIMIT 1 OFFSET ?
@@ -216,7 +232,7 @@ def get_history_entry(n):
     conn.close()
     if not row:
         return None
-    timestamp, indicator, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, censys_json, greynoise_json, urlhaus_json, urlscan_json, hybrid_json, spamhaus_json, threatfox_json = row
+    timestamp, indicator, vt_json, otx_json, abuse_json, shodan_json, verdict, whois_json, score, per_source_json, censys_json, greynoise_json, urlhaus_json, urlscan_json, hybrid_json, spamhaus_json, threatfox_json, gi_json, pivot_json = row
     return {
         "timestamp":    timestamp,
         "indicator":    indicator,
@@ -232,5 +248,9 @@ def get_history_entry(n):
         "hybrid":       json.loads(hybrid_json)      if hybrid_json      else None,
         "spamhaus_drop": json.loads(spamhaus_json)  if spamhaus_json    else None,
         "threatfox":    json.loads(threatfox_json)  if threatfox_json   else None,
+        "google_intel": json.loads(gi_json)          if gi_json          else None,
         "verdict":      verdict,
+        "score":        score,
+        "per_source":   json.loads(per_source_json) if per_source_json  else {},
+        "pivot_result": json.loads(pivot_json)       if pivot_json       else None,
     }

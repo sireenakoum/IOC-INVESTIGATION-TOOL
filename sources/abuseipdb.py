@@ -57,7 +57,6 @@ def abuseipdb_check(indicator, ind_type):
             "https://api.abuseipdb.com/api/v2/check",
             headers=headers,
             params=params,
-            timeout=10,
         )
         response.raise_for_status()
         data = response.json().get("data", {})

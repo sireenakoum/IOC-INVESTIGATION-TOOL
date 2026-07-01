@@ -307,5 +307,123 @@
         "cap": 2,
         "categories": ["Brute-Force", "DDoS Attack", "Web App Attack", "Bad Web Bot", "Web Spam", "Email Spam", "Spoofing"]
     }
+},
+
+"vt_relations": {
+    "communicating_malicious_1":  1,
+    "communicating_malicious_2+": 2,
+    "downloaded_malicious_1":     1,
+    "downloaded_malicious_2+":    2,
+    "combined_cap":               3
+},
+
+"vt_comments": {
+    "net_votes_high":      2,
+    "net_votes_high_min":  5,
+    "net_votes_mid":       1,
+    "net_votes_mid_min":   2,
+    "net_votes_negative": -1,
+    "net_votes_neg_max":  -2
+},
+
+"otx_malware_families": {
+    "one":       1,
+    "two_three": 2,
+    "four_plus": 3,
+    "cap":       3
+},
+
+"otx_attack_ids": {
+    "one":        1,
+    "two_four":   2,
+    "five_plus":  3,
+    "cap":        3,
+    "high_impact_bonus": 1,
+    "HIGH_IMPACT_TECHNIQUES": [
+        "T1059", "T1071", "T1071.001", "T1055", "T1105",
+        "T1021", "T1053", "T1078", "T1190", "T1133",
+        "T1574", "T1574.001", "T1574.002",
+        "T1095",
+        "T1041",
+        "T1082",
+        "T1497", "T1497.001", "T1497.003",
+        "T1106",
+        "T1204", "T1204.002",
+        "T1059.003"
+    ]
+},
+
+"otx_reputation": {
+    "threat_type_scores": {
+        "malicious host":       3,
+        "malware distribution": 3,
+        "command and control":  4,
+        "botnet":               3,
+        "phishing":             2,
+        "spam":                 1,
+        "scanning host":        1,
+        "compromised":          2,
+        "tor exit node":        2,
+        "anonymization":        1
+    },
+    "cap": 4
+},
+
+"google_intel": {
+    "enabled": true,
+    "cache_ttl_hours": 12,
+    "max_urls": 8,
+    "cap": 10,
+    "SERPAPI_KEY": "",
+    "scoring": {
+        "malware_one":       2,
+        "malware_two_three": 3,
+        "malware_four_plus": 4,
+        "malware_cap":       4,
+        "attck_one":         1,
+        "attck_two_three":   2,
+        "attck_four_plus":   3,
+        "attck_cap":         3,
+        "ioc_one_two":       1,
+        "ioc_three_plus":    2,
+        "ioc_cap":           2
+    },
+    "trusted_sources": {
+        "tier1": [
+            "securelist.com", "unit42.paloaltonetworks.com",
+            "blog.talosintelligence.com", "research.checkpoint.com",
+            "thedfirreport.com", "mandiant.com", "crowdstrike.com",
+            "blogs.blackberry.com"
+        ],
+        "tier2": [
+            "any.run", "tria.ge", "nucleon-security.com",
+            "malpedia.caad.fkie.fraunhofer.de", "abuse.ch",
+            "otx.alienvault.com", "virustotal.com"
+        ]
+    },
+    "skip_domains": [
+        "google.com", "bing.com", "youtube.com", "twitter.com",
+        "reddit.com", "linkedin.com", "facebook.com",
+        "pastebin.com", "githubusercontent.com", "serpapi.com"
+    ]
+},
+
+"pivot": {
+    "max_iocs":        7,
+    "malicious_bonus": 2,
+    "malicious_cap":   6,
+    "suspicious_bonus": 1,
+    "suspicious_cap":  2,
+    "total_cap":       6
+},
+
+"vt_ratio_bonus": {
+    "threshold_high": 0.70,
+    "threshold_mid":  0.50,
+    "threshold_low":  0.30,
+    "bonus_high": 3,
+    "bonus_mid":  2,
+    "bonus_low":  1,
+    "cap": 3
 }
 }

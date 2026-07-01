@@ -1,5 +1,6 @@
 import os
 import time
+import datetime
 import requests
 from cache import cache_get, cache_set
 from dotenv import load_dotenv
@@ -17,13 +18,136 @@ TYPE_PATH = {
 
 # VirusTotal
 
+
+def _fetch_vt_comments(indicator, ind_type):
+    cached = cache_get(indicator, "vt_comments")
+    if cached is not None:
+        return cached
+
+    path = TYPE_PATH.get(ind_type, "domains")
+    url  = f"{BASE_URL_VT}/{path}/{indicator}/comments"
+
+    try:
+        response = requests.get(
+            url, headers=headers_VT,
+            params={"limit": 10, "relationships": "author"},
+        )
+    except requests.exceptions.ConnectionError as e:
+        print(f"  [VT] Comments request failed ({e.__class__.__name__}) — skipping, continuing scan")
+        return []
+
+    if response.status_code != 200:
+        print(f"  [VT] Comments endpoint error {response.status_code} — skipping, continuing scan")
+        return []
+
+    comments = []
+    for item in response.json().get("data", []):
+        attrs = item.get("attributes", {})
+        text  = (attrs.get("text") or "").strip()
+        if len(text) < 10:
+            continue
+
+        ts       = attrs.get("date")
+        date_str = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "unknown"
+        votes    = attrs.get("votes", {})
+
+        author_data = item.get("relationships", {}).get("author", {}).get("data", {})
+        author      = author_data.get("id") if author_data else None
+
+        comments.append({
+            "date":           date_str,
+            "author":         author or "anonymous",
+            "text":           text[:300],
+            "votes_positive": votes.get("positive", 0),
+            "votes_negative": votes.get("negative", 0),
+        })
+
+    cache_set(indicator, "vt_comments", comments)
+    return comments
+
+
+def _fetch_vt_relations(indicator, ind_type):
+    cached = cache_get(indicator, "vt_relations")
+    if cached is not None:
+        return cached
+
+    if ind_type == "ip":
+        endpoints = [
+            ("communicating_files", f"{BASE_URL_VT}/ip_addresses/{indicator}/communicating_files"),
+            ("downloaded_files",    f"{BASE_URL_VT}/ip_addresses/{indicator}/downloaded_files"),
+            ("resolutions",         f"{BASE_URL_VT}/ip_addresses/{indicator}/resolutions"),
+        ]
+    elif ind_type == "domain":
+        endpoints = [
+            ("communicating_files", f"{BASE_URL_VT}/domains/{indicator}/communicating_files"),
+            ("downloaded_files",    f"{BASE_URL_VT}/domains/{indicator}/downloaded_files"),
+            ("resolutions",         f"{BASE_URL_VT}/domains/{indicator}/resolutions"),
+        ]
+    else:
+        endpoints = [
+            ("contacted_ips",     f"{BASE_URL_VT}/files/{indicator}/contacted_ips"),
+            ("contacted_domains", f"{BASE_URL_VT}/files/{indicator}/contacted_domains"),
+            ("contacted_urls",    f"{BASE_URL_VT}/files/{indicator}/contacted_urls"),
+        ]
+
+    relations = {}
+
+    for rel_name, url in endpoints:
+        try:
+            resp = requests.get(url, headers=headers_VT, params={"limit": 5})
+        except requests.exceptions.ConnectionError as e:
+            print(f"  [VT] Relations/{rel_name} request failed ({e.__class__.__name__}) — skipping, continuing scan")
+            relations[rel_name] = []
+            continue
+
+        if resp.status_code == 404:
+            relations[rel_name] = []
+            continue
+
+        if resp.status_code == 429 or resp.status_code >= 500:
+            print(f"  [VT] Relations/{rel_name} error {resp.status_code} — skipping, continuing scan")
+            relations[rel_name] = []
+            continue
+
+        if resp.status_code != 200:
+            relations[rel_name] = []
+            continue
+
+        items = []
+        for entry in resp.json().get("data", []):
+            attrs = entry.get("attributes", {})
+            stats = attrs.get("last_analysis_stats", {})
+
+            if rel_name == "resolutions":
+                items.append({
+                    "hostname": attrs.get("host_name") or attrs.get("hostname") or "",
+                    "ip":       attrs.get("ip_address") or "",
+                })
+            elif rel_name in ("communicating_files", "downloaded_files"):
+                items.append({
+                    "id":         entry.get("id", ""),
+                    "malicious":  stats.get("malicious", 0),
+                    "undetected": stats.get("undetected", 0),
+                })
+            else:
+                items.append({
+                    "id":        entry.get("id") or attrs.get("ip_address") or attrs.get("url") or "",
+                    "malicious": stats.get("malicious", 0),
+                })
+
+        relations[rel_name] = items
+
+    cache_set(indicator, "vt_relations", relations)
+    return relations
+
+
 def vt_request_rescan(indicator, ind_type):
     path = TYPE_PATH.get(ind_type, "domains")
     url  = f"{BASE_URL_VT}/{path}/{indicator}/analyse"
 
     try:
-        response = requests.post(url, headers=headers_VT, timeout=30)
-    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        response = requests.post(url, headers=headers_VT)
+    except requests.exceptions.ConnectionError:
         print("  [VT] Rescan request failed, using cached report")
         return None
 
@@ -40,8 +164,8 @@ def vt_wait_for_analysis(analysis_id, timeout=60, poll_interval=15):
 
     while elapsed < timeout:
         try:
-            response = requests.get(url, headers=headers_VT, timeout=30)
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            response = requests.get(url, headers=headers_VT)
+        except requests.exceptions.ConnectionError:
             return False
 
         if response.status_code != 200:
@@ -58,15 +182,18 @@ def vt_wait_for_analysis(analysis_id, timeout=60, poll_interval=15):
     return False
 
 
-def vt_check(indicator, ind_type):
+def vt_check(indicator, ind_type, skip_rescan=False):
 
     cached = cache_get(indicator, "virustotal")
     if cached:
+        cached["comments"] = _fetch_vt_comments(indicator, ind_type)
+        cached["relations"] = _fetch_vt_relations(indicator, ind_type)
         return cached
 
-    analysis_id = vt_request_rescan(indicator, ind_type)
-    if analysis_id:
-        vt_wait_for_analysis(analysis_id)
+    if not skip_rescan:
+        analysis_id = vt_request_rescan(indicator, ind_type)
+        if analysis_id:
+            vt_wait_for_analysis(analysis_id)
 
     if ind_type == "ip":
         url = f"{BASE_URL_VT}/ip_addresses/{indicator}"
@@ -76,10 +203,7 @@ def vt_check(indicator, ind_type):
         url = f"{BASE_URL_VT}/domains/{indicator}"
 
     try:
-        response = requests.get(url, headers=headers_VT, timeout=30)
-    except requests.exceptions.Timeout:
-        print("  [VT] Request timed out, try again later")
-        return None
+        response = requests.get(url, headers=headers_VT)
     except requests.exceptions.ConnectionError:
         print("  [VT] Connection error, check your network")
         return None
@@ -137,5 +261,8 @@ def vt_check(indicator, ind_type):
         result["asn"]     = attrs.get("asn", "Unknown")
 
     cache_set(indicator, "virustotal", result)
+
+    result["comments"] = _fetch_vt_comments(indicator, ind_type)
+    result["relations"] = _fetch_vt_relations(indicator, ind_type)
 
     return result

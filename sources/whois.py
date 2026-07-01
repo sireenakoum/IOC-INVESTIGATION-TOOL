@@ -24,10 +24,7 @@ def whois_check(indicator, ind_type):
             "apiKey": WHOIS_API_KEY,
             "domainName": indicator,
             "outputFormat": "JSON"
-        }, timeout=10)
-    except requests.exceptions.Timeout:
-        print("  [WHOIS] Request timed out")
-        return None
+        })
     except requests.exceptions.ConnectionError:
         print("  [WHOIS] Connection error")
         return None

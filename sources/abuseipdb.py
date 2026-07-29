@@ -1,6 +1,6 @@
 import requests
 import os
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 
 
 CATEGORY_NAMES = {
@@ -29,11 +29,11 @@ CATEGORY_NAMES = {
     23: "IoT Targeted",
 }
 
-def abuseipdb_check(indicator, ind_type):
+def abuseipdb_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type != "ip":
         return None
 
-    cached = cache_get(indicator, "abuseipdb")
+    cached = cache_get(indicator, "abuseipdb", user_id)
     if cached:
         return cached
 
@@ -107,5 +107,5 @@ def abuseipdb_check(indicator, ind_type):
         "reports":        reports,
     }
     
-    cache_set(indicator,"abuseipdb",result)
+    cache_set(indicator, "abuseipdb", result, user_id)
     return result

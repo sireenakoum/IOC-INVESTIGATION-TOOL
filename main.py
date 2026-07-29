@@ -1,8 +1,14 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-import datetime
 from concurrent.futures import ThreadPoolExecutor
+
+# Self-heals a fresh/empty ioc_cache.db — must run before ANY `sources.*`
+# import below, since sources/scoring.py loads config at its own import time
+# (module-level `NOISE_TAGS = load_config()[...]`). See web/app.py for the
+# same fix and a fuller explanation.
+from sources.app_config import ensure_seeded
+ensure_seeded()
 
 from detect import detect_type
 from sources.vt import vt_check
@@ -19,13 +25,12 @@ from sources.spamhaus import spamhaus_asn_check
 from sources.threatfox import threatfox_check
 from sources.google_intel import query_google_intel
 from sources.scoring import combined_verdict, load_config, resolve_vendor, VERDICT_DISPLAY
-from sources.pivot import extract_pivot_iocs, run_pivot_scan, _detect_pivot_type
+from sources.pivot import extract_pivot_iocs, run_pivot_scan, _print_source_summaries, generate_pivot_detail_log
 import cache
 from cache import clear_cache, clear_indicator_cache
 from output import save_results, print_history, get_history_entry, get_history_count, clear_history, clear_indicator, get_last_result, compare_results
-import os as _os
 
-config = load_config(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "config.json"))
+config = load_config()
 VERBOSE = False
 
 
@@ -234,25 +239,6 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
         _whois_ctx = verdict_result.get('whois_context', {})
         if _whois_ctx.get('has_data'):
             print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
-        _corr = verdict_result.get('shodan_censys_corroboration', {})
-        _corr_total = _corr.get('total_bonus', 0)
-        if _corr_total > 0:
-            _parts = []
-            if _corr.get('corroborated_ports'):
-                _parts.append(f"{len(_corr['corroborated_ports'])} port(s)")
-            if _corr.get('corroborated_cves'):
-                _parts.append(f"{len(_corr['corroborated_cves'])} CVE(s)")
-            if _corr.get('corroborated_products'):
-                _parts.append(f"{len(_corr['corroborated_products'])} product(s)")
-            if _corr.get('corroborated_banners'):
-                _parts.append(f"{len(_corr['corroborated_banners'])} banner(s)")
-            if _corr.get('cert_match'):
-                _parts.append("TLS cert")
-            if _corr.get('service_overlap_bonus', 0) > 0:
-                _parts.append(f"service overlap ({_corr.get('service_overlap_pct', 0)}%)")
-            if _corr.get('recency_bonus', 0) > 0:
-                _parts.append("both recent")
-            print(f"  Corroboration  : {', '.join(_parts)} confirmed across Shodan+Censys (+{_corr_total})")
         print(f"  Consensus      : {verdict_result['consensus_ratio']}")
         print(f"{'='*45}\n")
 
@@ -262,7 +248,7 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
         print(f"  Threat Report: {indicator}")
         print(f"{'='*45}")
 
-        _print_source_summaries(ind_type, vt, otx, abuse, shodan, whois, censys, greynoise, urlhaus, threatfox, urlscan, hybrid, spamhaus_drop)
+        _print_source_summaries(ind_type, vt, otx, abuse, shodan, whois, censys, greynoise, urlhaus, threatfox, urlscan, hybrid, spamhaus_drop, config)
 
         if google_intel:
             print(f"\n  [Google Intel]")
@@ -305,7 +291,7 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
 
         print(f"\n  Per Source:")
         for name, s in verdict_result['per_source'].items():
-            print(f"    {name:<12}: {s['verdict_display']}  (evidence: {s['evidence_count']})")
+            print(f"    {name:<12}: {s['findings_label']}  (evidence: {s['evidence_count']})")
 
         print(f"\n  Score Breakdown:")
         for line in verdict_result["breakdown"]:
@@ -326,24 +312,6 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
         _whois_ctx = verdict_result.get('whois_context', {})
         if _whois_ctx.get('has_data'):
             print(f"  Supporting     : WHOIS (+{_whois_ctx['score_modifier']} domain context)")
-        _corr = verdict_result.get('shodan_censys_corroboration', {})
-        _corr_total = _corr.get('total_bonus', 0)
-        if _corr_total > 0:
-            print(f"\n  [Corroboration] Shodan + Censys (+{_corr_total} total, cap 4)")
-            if _corr.get('corroborated_ports'):
-                print(f"  Ports    : {', '.join(_corr['corroborated_ports'])} (+{_corr['port_bonus']})")
-            if _corr.get('corroborated_cves'):
-                print(f"  CVEs     : {', '.join(_corr['corroborated_cves'])} (+{_corr['cve_bonus']})")
-            if _corr.get('corroborated_products'):
-                print(f"  Products : {', '.join(_corr['corroborated_products'])} (+{_corr['product_bonus']})")
-            if _corr.get('corroborated_banners'):
-                print(f"  Banners  : {', '.join(_corr['corroborated_banners'])} (+{_corr['banner_bonus']})")
-            if _corr.get('cert_match'):
-                print(f"  TLS cert : fingerprint match across both sources (+{_corr['cert_bonus']})")
-            if _corr.get('service_overlap_bonus', 0) > 0:
-                print(f"  Overlap  : {_corr.get('service_overlap_pct', 0)}% non-common port overlap (+{_corr['service_overlap_bonus']})")
-            if _corr.get('recency_bonus', 0) > 0:
-                print(f"  Recency  : both scanned within 7 days (+{_corr['recency_bonus']})")
         print(f"  Active sources : {', '.join(verdict_result['active_sources'])}")
         if verdict_result['inactive_sources']:
             print(f"  No data from   : {', '.join(verdict_result['inactive_sources'])}")
@@ -352,410 +320,14 @@ def display_report(indicator, ind_type, vt, otx, abuse, shodan=None, whois=None,
     return verdict_result
 
 
-def _print_source_summaries(ind_type, vt, otx, abuse, shodan, whois, censys, greynoise, urlhaus, threatfox, urlscan, hybrid, spamhaus_drop):
-    if vt:
-        print(f"\n  [VirusTotal]")
-        print(f"  Malicious  : {vt['malicious']}")
-        print(f"  Suspicious : {vt['suspicious']}")
-        print(f"  Harmless   : {vt['harmless']}")
-        print(f"  Undetected : {vt['undetected']}")
-
-        if ind_type == "ip":
-            print(f"  Country    : {vt['country']}")
-            print(f"  ASN        : {vt['asn']}")
-
-        if len(vt["tags"]) > 0:
-            print(f"  Tags       : {', '.join(vt['tags'][:5])}")
-
-        if vt["last_scan_date"]:
-            scan_date = datetime.datetime.fromtimestamp(vt["last_scan_date"])
-            print(f"  Last Scan  : {scan_date.strftime('%Y-%m-%d %H:%M')}")
-
-        if vt["dns_records"]:
-            print(f"\n  Last DNS Records:")
-            for rec in vt["dns_records"]:
-                print(f"    {rec}")
-
-        if len(vt["malicious_vendors"]) > 0:
-            print(f"\n  Top Malicious Detections:")
-
-            def _vendor_tier(v):
-                canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
-                if canonical in config["tier1"]:
-                    return 1
-                elif canonical in config["tier2"]:
-                    return 2
-                return 3
-
-            for v in sorted(vt["malicious_vendors"], key=_vendor_tier):
-                canonical = resolve_vendor(v["vendor"], config["alias_lookup"])
-                if canonical in config["tier1"]:
-                    tier_label = "(Tier 1)"
-                elif canonical in config["tier2"]:
-                    tier_label = "(Tier 2)"
-                else:
-                    tier_label = "(Tier 3)"
-                print(f"    {v['vendor']:<20} {v['name']:<30} {tier_label}")
-
-        comments  = vt.get("comments", [])
-        relations = vt.get("relations", {})
-        has_relations = any(items for items in relations.values()) if relations else False
-
-        if not comments and not has_relations:
-            print(f"\n  No community activity or relations found.")
-        else:
-            print(f"\n  ── Community comments ──")
-            if comments:
-                for c in comments[:5]:
-                    snippet = c["text"][:120]
-                    print(f"  [{c['date']}] @{c['author']} — {snippet} [+{c['votes_positive']}/-{c['votes_negative']}]")
-                if len(comments) > 5:
-                    print(f"  ({len(comments) - 5} more not shown)")
-            else:
-                print("  (none)")
-
-            print(f"\n  ── Relations ──")
-            if has_relations:
-                for rel_name, items in relations.items():
-                    if not items:
-                        continue
-                    label = rel_name.replace("_", " ").title()
-                    if rel_name == "resolutions":
-                        ids = [(i.get("hostname") or i.get("ip") or "") for i in items]
-                        print(f"  {label}: {', '.join(ids)}")
-                    else:
-                        ids = [i.get("id", "") for i in items]
-                        mal = sum(i.get("malicious", 0) for i in items)
-                        print(f"  {label}: {', '.join(ids)}  (malicious: {mal})")
-            else:
-                print("  (none)")
-
-    if otx:
-        print(f"\n  [AlienVault OTX]")
-
-        if ind_type == "ip":
-            print(f"  Country    : {otx['country']}")
-            print(f"  ASN        : {otx['asn']}")
-            print(f"  Reputation : {otx['reputation']}")
-
-        ind_desc  = otx.get("indicator_description")
-        ind_title = otx.get("indicator_title")
-        rep_score = otx.get("reputation_threat_score")
-        rep_type  = otx.get("reputation_threat_type")
-
-        if ind_desc or rep_score is not None:
-            print(f"\n  ── OTX Indicator Summary ──")
-            if ind_title:
-                print(f"  Title: {ind_title}")
-            if ind_desc:
-                print(f"  Description: {ind_desc[:300]}")
-            if ZeroDivisionError is not None:
-                print(f"  OTX Threat Score: {rep_score}/100  ({rep_type})")
-
-        print(f"  Pulses     : {otx['pulse_count']} threat reports")
-
-        pulse_details = otx.get("pulse_details", [])
-
-        for i, p in enumerate(pulse_details, 1):
-            print(f"\n  Pulse #{i}: {p['name']}")
-
-            if p["adversary"] != "":
-                print(f"    Threat Actor  : {p['adversary']}")
-
-            if len(p["tags"]) > 0:
-                print(f"    Tags          : {', '.join(p['tags'][:5])}")
-
-            if p["ref"] != "":
-                print(f"    Reference     : {p['ref']}")
-
-        pdns = otx.get("passive_dns", [])
-        if pdns:
-            print(f"\n  Passive DNS ({len(pdns)} record(s), showing first 5):")
-            for r in pdns[:5]:
-                first = r["first"][:10] if r["first"] else "?"
-                last  = r["last"][:10]  if r["last"]  else "?"
-                print(f"    [{r['record_type']:<5}] {r['hostname'] or r['address']:<40}  first: {first}  last: {last}")
-
-        print(f"\n  ── Pulse descriptions ──")
-        pulses_detail = otx.get("pulses_detail", [])
-        useful_pulses = [
-            p for p in pulses_detail
-            if p.get("description") or p.get("malware_families") or p.get("attack_ids")
-        ]
-        if not useful_pulses:
-            print(f"  No pulse descriptions or ATT&CK mappings available.")
-        else:
-            for p in useful_pulses[:3]:
-                modified   = p.get("modified") or ""
-                name       = p.get("name", "Unnamed")
-                author     = p.get("author_name") or ""
-                desc_full  = (p.get("description") or "").strip()
-                desc       = desc_full[:200]
-                families   = p.get("malware_families") or []
-                attack_ids = p.get("attack_ids") or []
-                refs       = p.get("references") or []
-
-                author_str = f" (by @{author})" if author else ""
-                print(f"  [{modified}] {name}{author_str}")
-                if desc:
-                    ellipsis = "..." if len(desc_full) > 200 else ""
-                    print(f"    Description: {desc}{ellipsis}")
-                if families:
-                    print(f"    Malware: {', '.join(families)}")
-                if attack_ids:
-                    print(f"    ATT&CK: {', '.join(attack_ids)}")
-                if refs:
-                    print(f"    References: {refs[0]}")
-                print(f"  ---")
-
-            remaining = len(useful_pulses) - 3
-            if remaining > 0:
-                print(f"  {remaining} more pulses not shown")
-
-    if abuse:
-        print(f"\n  [AbuseIPDB]")
-        print(f"  Abuse Score    : {abuse['abuse_score']}%")
-        print(f"  Total Reports  : {abuse['total_reports']}  ({abuse['distinct_users']} distinct users)")
-        print(f"  ISP            : {abuse['isp']}")
-        print(f"  Tor Exit Node  : {'Yes' if abuse['is_tor'] else 'No'}")
-        if abuse['last_reported']:
-            print(f"  Last Reported  : {abuse['last_reported'][:10]}")
-
-        if abuse['top_categories']:
-            print(f"\n  Top Attack Types:")
-            for name, count in abuse['top_categories'][:5]:
-                print(f"    {name:<25} {count} report(s)")
-
-        if abuse['reports']:
-            print(f"\n  Recent Reports:")
-            _firewall_words  = {'ttl', 'ufw', 'tos', 'packet', 'port'}
-            _threat_keywords = {'malware', 'phishing', 'ransomware', 'trojan', 'botnet', 'actor'}
-            for r in abuse['reports']:
-                date = r['reported_at'][:10] if r['reported_at'] else '?'
-                cats = ', '.join(r['categories']) if r['categories'] else 'None'
-                print(f"    [{date}] {cats}")
-                comment = (r['comment'] or '').strip()
-                if comment:
-                    lower = comment.lower()
-                    is_firewall = any(w in lower for w in _firewall_words)
-                    has_domain  = '.' in comment and not comment.replace('.', '').replace(':', '').replace('/', '').replace(' ', '').isdigit()
-                    has_threat  = any(k in lower for k in _threat_keywords)
-                    if not is_firewall and (has_domain or has_threat):
-                        print(f"             {comment[:80]}")
-
-    if shodan:
-        print(f"\n  [Shodan]")
-        print(f"  Org          : {shodan['org']}")
-        print(f"  ISP          : {shodan['isp']}")
-        print(f"  ASN          : {shodan['asn']}")
-        print(f"  OS           : {shodan['os'] or 'Unknown'}")
-        print(f"  Last scan    : {shodan['last_update'][:10] if shodan['last_update'] else 'Unknown'}")
-
-        if shodan['hostnames']:
-            print(f"  Hostnames    : {', '.join(shodan['hostnames'][:3])}")
-        else:
-            print(f"  Hostnames    : None")
-
-        if shodan['ports']:
-            print(f"  Open ports   : {', '.join(str(p) for p in shodan['ports'])}")
-
-        if shodan['tags']:
-            print(f"  Tags         : {', '.join(shodan['tags'])}")
-
-        if shodan['vulns']:
-            print(f"\n  CVEs ({len(shodan['vulns'])} found):")
-            for cve in shodan['vulns'][:5]:
-                print(f"    {cve}")
-
-        if shodan['services']:
-            print(f"\n  Services:")
-            for svc in shodan['services']:
-                product   = svc['product'] or 'Unknown'
-                version   = svc['version'] or ''
-                label     = f"{product} {version}".strip()
-                port      = svc['port']      if svc['port']      is not None else '?'
-                transport = svc['transport'] if svc['transport'] is not None else '?'
-                print(f"    Port {port:<6} {transport:<4} {label}")
-
-    if censys:
-        print(f"\n  [Censys]")
-        print(f"  Org          : {censys.get('org') or 'Unknown'}")
-        print(f"  ASN          : {censys.get('asn') or 'Unknown'}")
-        print(f"  Country      : {censys.get('country') or 'Unknown'}")
-        print(f"  Last scan    : {censys['last_update'][:10] if censys.get('last_update') else 'Unknown'}")
-
-        if censys.get('ports'):
-            print(f"  Open ports   : {', '.join(str(p) for p in censys['ports'])}")
-
-        if censys.get('labels'):
-            print(f"  Labels       : {', '.join(censys['labels'])}")
-
-        if censys.get('vulns'):
-            print(f"\n  CVEs ({len(censys['vulns'])} found):")
-            for cve in censys['vulns'][:5]:
-                print(f"    {cve}")
-
-        if censys.get('services'):
-            print(f"\n  Services:")
-            for svc in censys['services']:
-                product   = svc.get('product') or 'Unknown'
-                version   = svc.get('version') or ''
-                label     = f"{product} {version}".strip()
-                port      = svc.get('port')      if svc.get('port')      is not None else '?'
-                transport = svc.get('transport') if svc.get('transport') is not None else '?'
-                print(f"    Port {port:<6} {transport:<4} {label}")
-
-    if whois:
-        print(f"\n  [WHOIS]")
-        print(f"  Domain         : {whois.get('domain') or 'N/A'}")
-        print(f"  Registrar      : {whois.get('registrar') or 'N/A'}")
-        creation = whois.get('creation_date')
-        print(f"  Creation date  : {creation[:10] if creation else 'N/A'}")
-        age_days = whois.get('domain_age_days')
-        print(f"  Domain age     : {age_days} days" if age_days is not None else "  Domain age     : unknown")
-        expiry = whois.get('expiration_date')
-        print(f"  Expiration     : {expiry[:10] if expiry else 'N/A'}")
-        print(f"  Privacy masked : {'Yes' if whois.get('privacy_masked') else 'No'}")
-        print(f"  Country        : {whois.get('country') or 'N/A'}")
-        ns = whois.get('name_servers', [])
-        print(f"  Name servers   : {', '.join(ns[:3]) if ns else 'N/A'}")
-
-    if greynoise:
-        print(f"\n  [GreyNoise]")
-        print(f"  Classification : {greynoise.get('classification', 'unknown')}")
-        print(f"  Noise          : {'Yes' if greynoise.get('noise') else 'No'}")
-        if greynoise.get('actor'):
-            print(f"  Actor          : {greynoise['actor']}")
-        if greynoise.get('cve'):
-            print(f"  CVEs           : {greynoise['cve']}")
-
-    if urlhaus:
-        print(f"\n  [URLhaus]")
-        print(f"  URL count      : {urlhaus.get('url_count', 0)}")
-        if urlhaus.get('threat'):
-            print(f"  Threat type    : {urlhaus['threat']}")
-        if urlhaus.get('first_seen'):
-            print(f"  First seen     : {urlhaus['first_seen'][:10]}")
-        urls = urlhaus.get('urls', [])
-        if urls:
-            print(f"\n  Recent URLs:")
-            for u in urls[:3]:
-                print(f"    [{u.get('url_status', '?')}] {u.get('url', '')[:70]}")
-
-    if threatfox:
-        print(f"\n  [ThreatFox]")
-        print(f"  IOC count      : {threatfox.get('ioc_count', 0)}")
-        if threatfox.get('threat_type'):
-            print(f"  Threat type    : {threatfox['threat_type']}")
-        if threatfox.get('malware'):
-            print(f"  Malware family : {threatfox['malware']}")
-        if threatfox.get('confidence_level') is not None:
-            print(f"  Confidence     : {threatfox['confidence_level']}%")
-        if threatfox.get('first_seen'):
-            print(f"  First seen     : {threatfox['first_seen'][:10]}")
-        iocs = threatfox.get('iocs', [])
-        if iocs:
-            print(f"\n  IOCs:")
-            for ioc in iocs[:3]:
-                print(f"    [{ioc.get('ioc_type', '?')}] {ioc.get('ioc', '')[:70]}")
-
-    if urlscan:
-        print(f"\n  [URLScan]")
-        print(f"  Malicious      : {'Yes' if urlscan.get('malicious') else 'No'}")
-        if urlscan.get('categories'):
-            print(f"  Categories     : {', '.join(urlscan['categories'][:5])}")
-        if urlscan.get('page_title'):
-            print(f"  Page title     : {urlscan['page_title'][:60]}")
-        if urlscan.get('server'):
-            print(f"  Server         : {urlscan['server']}")
-        if urlscan.get("domains"):
-            print(f"  Hosted domains : {', '.join(urlscan['domains'][:5])}")
-        if urlscan.get('ip'):
-            print(f"  Resolved IP    : {urlscan['ip']}")
-
-    if hybrid:
-        print(f"\n  [Hybrid Analysis]")
-        print(f"  Threat score   : {hybrid.get('threat_score', 'N/A')}")
-        print(f"  Verdict        : {hybrid.get('verdict', 'unknown')}")
-        if hybrid.get('type'):
-            print(f"  File type      : {hybrid['type']}")
-        if hybrid.get('family'):
-            print(f"  Families       : {', '.join(hybrid['family'])}")
-
-    if spamhaus_drop is not None:
-        print(f"\n  [Spamhaus DROP]")
-        if spamhaus_drop.get('listed'):
-            print(f"  Listed         : Yes")
-            print(f"  ASN name       : {spamhaus_drop.get('asname') or 'N/A'}")
-            print(f"  Country        : {spamhaus_drop.get('cc') or 'N/A'}")
-            print(f"  Domain         : {spamhaus_drop.get('domain') or 'N/A'}")
-            print(f"  RIR            : {spamhaus_drop.get('rir') or 'N/A'}")
-        else:
-            print(f"  Listed         : No")
-
-
 def _print_pivot_details(pivot_result, config):
     all_iocs = pivot_result.get("malicious_pivots", []) + pivot_result.get("suspicious_pivots", [])
     cache.SILENT = True
     for ioc in all_iocs:
         print(f"\n  {'─'*55}")
         print(f"  Pivot IOC: {ioc}")
-        print(f"  Verdict  : {VERDICT_DISPLAY.get(pivot_result['pivot_verdicts'][ioc])}")
-        print(f"  Score    : {pivot_result['pivot_scores'].get(ioc, '?')}")
-        print(f"  Found via: {', '.join(pivot_result['sources_map'].get(ioc, []))}")
+        print(generate_pivot_detail_log(ioc, pivot_result, config))
         print(f"  {'─'*55}")
-
-        ioc_type = _detect_pivot_type(ioc)
-
-        vt_r = otx_r = hybrid_r = threatfox_r = urlhaus_r = urlscan_r = abuse_r = greynoise_r = shodan_r = None
-        if ioc_type == "hash":
-            vt_r        = vt_check(ioc, "hash")
-            hybrid_r    = hybrid_check(ioc, "hash")
-            threatfox_r = threatfox_check(ioc, "hash")
-            otx_r       = otx_check(ioc, "hash")
-        elif ioc_type == "domain":
-            vt_r        = vt_check(ioc, "domain")
-            otx_r       = otx_check(ioc, "domain")
-            threatfox_r = threatfox_check(ioc, "domain")
-            urlhaus_r   = urlhaus_check(ioc, "domain")
-            urlscan_r   = urlscan_check(ioc, "domain")
-        elif ioc_type == "url":
-            from sources.pivot import _extract_host
-            host        = _extract_host(ioc)
-            vt_r        = vt_check(host, "domain") if host else None
-            threatfox_r = threatfox_check(ioc, "url")
-            urlhaus_r   = urlhaus_check(host, "domain") if host else None
-            urlscan_r   = urlscan_check(ioc, "domain")
-        elif ioc_type == "ip":
-            from sources.abuseipdb import abuseipdb_check
-            from sources.greynoise import greynoise_check
-            from sources.shodan import shodan_check as shodan_check_fn
-            vt_r        = vt_check(ioc, "ip")
-            otx_r       = otx_check(ioc, "ip")
-            abuse_r     = abuseipdb_check(ioc, "ip")
-            greynoise_r = greynoise_check(ioc, "ip")
-            shodan_r    = shodan_check_fn(ioc, "ip")
-
-        result = combined_verdict(
-            vt=vt_r, otx=otx_r, abuse=abuse_r, shodan=shodan_r,
-            greynoise=greynoise_r, hybrid=hybrid_r,
-            threatfox=threatfox_r, urlhaus=urlhaus_r, urlscan=urlscan_r,
-            config=config,
-            pivot_result=None,
-        )
-
-        _print_source_summaries(ioc_type, vt_r, otx_r, abuse_r, shodan_r, None, None, greynoise_r, urlhaus_r, threatfox_r, urlscan_r, hybrid_r, None)
-
-        print(f"\n  Per Source:")
-        for name, s in result["per_source"].items():
-            print(f"    {name:<12}: {s['verdict_display']}  (evidence: {s['evidence_count']})")
-
-        print(f"\n  Score Breakdown:")
-        for line in result["breakdown"]:
-            print(f"    {line}")
-
-        print(f"\n  Active sources : {', '.join(result['active_sources'])}")
-        print(f"  No data from   : {', '.join(result['inactive_sources'])}")
     cache.SILENT = False
 
 
@@ -772,8 +344,8 @@ def _print_changes(changes, since_ts):
         print(f"    Score    : {changes['score']['from']} → {changes['score']['to']}")
     if "sources" in changes:
         for src, chg in changes["sources"].items():
-            old_v = VERDICT_DISPLAY.get(chg["from"], chg["from"] or "no data")
-            new_v = VERDICT_DISPLAY.get(chg["to"],   chg["to"]   or "no data")
+            old_v = chg["from"] or "No Findings"
+            new_v = chg["to"]   or "No Findings"
             print(f"    {src:<12}: {old_v} → {new_v}")
     print()
 
@@ -844,8 +416,10 @@ def check_indicator(indicator, previous=None):
         "censys":      censys,
         "shodan":      shodan,
     }
-    pivot_iocs, sources_map = extract_pivot_iocs(sources_results, indicator)
-    pivot_result = run_pivot_scan(pivot_iocs, sources_map, config, indicator)
+    pivot_iocs, sources_map, relation_map = extract_pivot_iocs(sources_results, indicator)
+    # user_id=None matches save_results' default below — the CLI has no
+    # per-user accounts, so full-scan lookups here aren't scoped to one.
+    pivot_result = run_pivot_scan(pivot_iocs, sources_map, config, indicator, relation_map, user_id=None)
 
     verdict_result = display_report(indicator, ind_type, vt, otx, abuse, shodan, whois, censys,
                                     greynoise=greynoise, urlhaus=urlhaus,
@@ -857,7 +431,14 @@ def check_indicator(indicator, previous=None):
                  censys_result=censys, greynoise_result=greynoise, urlhaus_result=urlhaus,
                  urlscan_result=urlscan, hybrid_result=hybrid,
                  spamhaus_drop_result=spamhaus_drop, threatfox_result=threatfox,
-                 google_intel_result=google_intel, pivot_result=pivot_result)
+                 google_intel_result=google_intel, pivot_result=pivot_result,
+                 breakdown=verdict_result["breakdown"],
+                 recommendation=verdict_result["recommendation"],
+                 consensus_ratio=verdict_result["consensus_ratio"],
+                 triggered_by=verdict_result["triggered_by"],
+                 active_sources=verdict_result["active_sources"],
+                 inactive_sources=verdict_result["inactive_sources"],
+                 contribution=verdict_result["contribution"])
 
     if old_entry is not None:
         new_cmp = {

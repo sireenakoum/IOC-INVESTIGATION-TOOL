@@ -1,10 +1,12 @@
+import { VERDICT_COLOR } from './verdictColors'
+
 export const VERDICT_STYLES = {
-  high:        { bg: '#1f1f23', border: '#ffb4ab', text: '#ffb4ab', pill: '#93000a' },
-  medium_risk: { bg: '#1f1f23', border: '#f97316', text: '#f97316', pill: '#c2410c' },
-  low_risk:    { bg: '#1f1f23', border: '#eab308', text: '#eab308', pill: '#a16207' },
-  suspicious:  { bg: '#1f1f23', border: '#f59e0b', text: '#f59e0b', pill: '#b45309' },
-  clean:       { bg: '#1f1f23', border: '#4edea3', text: '#4edea3', pill: '#10b981' },
-  no_data:     { bg: '#1b1b1f', border: '#3c4a42', text: '#86948a', pill: '#3c4a42' },
+  high:        { bg: '#1f1f23', border: VERDICT_COLOR.high,        text: VERDICT_COLOR.high,        pill: '#93000a' },
+  medium_risk: { bg: '#1f1f23', border: VERDICT_COLOR.medium_risk, text: VERDICT_COLOR.medium_risk, pill: '#c2410c' },
+  low_risk:    { bg: '#1f1f23', border: VERDICT_COLOR.low_risk,    text: VERDICT_COLOR.low_risk,    pill: '#a16207' },
+  suspicious:  { bg: '#1f1f23', border: VERDICT_COLOR.suspicious,  text: VERDICT_COLOR.suspicious,  pill: '#b45309' },
+  clean:       { bg: '#1f1f23', border: VERDICT_COLOR.clean,       text: VERDICT_COLOR.clean,       pill: '#10b981' },
+  no_data:     { bg: '#1b1b1f', border: VERDICT_COLOR.no_data,     text: '#86948a',                 pill: VERDICT_COLOR.no_data },
 }
 
 export const VERDICT_LABEL = {

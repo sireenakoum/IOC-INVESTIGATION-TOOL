@@ -1,4 +1,13 @@
 .env
 ioc_cache.db
+web/generated_reports/
+# reference.db is intentionally NOT ignored — shared reference lookup
+# tables, committed to git. See README.md "Reference data vs. personal data".
+node_modules/
 **/__pycache__/
 *.pyc
+
+# Stray root-level npm install (d3 belongs in web/frontend/package.json)
+/package.json
+/package-lock.json
+

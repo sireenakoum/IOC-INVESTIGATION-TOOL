@@ -2,7 +2,7 @@ import os
 import time
 import datetime
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,7 +32,7 @@ def _fetch_vt_comments(indicator, ind_type):
             url, headers=headers_VT,
             params={"limit": 10, "relationships": "author"},
         )
-    except requests.exceptions.ConnectionError as e:
+    except requests.exceptions.RequestException as e:
         print(f"  [VT] Comments request failed ({e.__class__.__name__}) — skipping, continuing scan")
         return []
 
@@ -95,7 +95,7 @@ def _fetch_vt_relations(indicator, ind_type):
     for rel_name, url in endpoints:
         try:
             resp = requests.get(url, headers=headers_VT, params={"limit": 5})
-        except requests.exceptions.ConnectionError as e:
+        except requests.exceptions.RequestException as e:
             print(f"  [VT] Relations/{rel_name} request failed ({e.__class__.__name__}) — skipping, continuing scan")
             relations[rel_name] = []
             continue
@@ -147,7 +147,7 @@ def vt_request_rescan(indicator, ind_type):
 
     try:
         response = requests.post(url, headers=headers_VT)
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.RequestException:
         print("  [VT] Rescan request failed, using cached report")
         return None
 
@@ -165,7 +165,7 @@ def vt_wait_for_analysis(analysis_id, timeout=60, poll_interval=15):
     while elapsed < timeout:
         try:
             response = requests.get(url, headers=headers_VT)
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.RequestException:
             return False
 
         if response.status_code != 200:
@@ -182,18 +182,35 @@ def vt_wait_for_analysis(analysis_id, timeout=60, poll_interval=15):
     return False
 
 
-def vt_check(indicator, ind_type, skip_rescan=False):
+def vt_check(indicator, ind_type, skip_rescan=False, user_id=LOCAL_USER_ID, light=False):
+    """
+    light=True skips the comments/relations fetch (4 extra sequential HTTP
+    calls to VT: comments + communicating_files + downloaded_files +
+    resolutions/contacted_*). Used by pivot scans, which run under a tight
+    shared timeout and don't need the full community/relations detail that
+    a top-level scan surfaces in its report — just a verdict signal.
+    """
 
-    cached = cache_get(indicator, "virustotal")
+    cached = cache_get(indicator, "virustotal", user_id)
     if cached:
-        cached["comments"] = _fetch_vt_comments(indicator, ind_type)
-        cached["relations"] = _fetch_vt_relations(indicator, ind_type)
+        if light:
+            cached["comments"] = []
+            cached["relations"] = {}
+        else:
+            cached["comments"] = _fetch_vt_comments(indicator, ind_type)
+            cached["relations"] = _fetch_vt_relations(indicator, ind_type)
+        cached["rescan_timed_out"] = False
+        cached["self_rescanned"] = False
         return cached
 
+    rescan_timed_out = False
+    self_rescanned = False
     if not skip_rescan:
         analysis_id = vt_request_rescan(indicator, ind_type)
         if analysis_id:
-            vt_wait_for_analysis(analysis_id)
+            completed = vt_wait_for_analysis(analysis_id)
+            rescan_timed_out = not completed
+            self_rescanned    = completed
 
     if ind_type == "ip":
         url = f"{BASE_URL_VT}/ip_addresses/{indicator}"
@@ -204,7 +221,7 @@ def vt_check(indicator, ind_type, skip_rescan=False):
 
     try:
         response = requests.get(url, headers=headers_VT)
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.RequestException:
         print("  [VT] Connection error, check your network")
         return None
 
@@ -254,15 +271,35 @@ def vt_check(indicator, ind_type, skip_rescan=False):
         "tags":              tags,
         "last_scan_date":    last_scan_date,
         "dns_records":       dns_records,
+        "rescan_timed_out":  rescan_timed_out,
+        "self_rescanned":    self_rescanned,
     }
 
     if ind_type == "ip":
         result["country"] = attrs.get("country", "Unknown")
         result["asn"]     = attrs.get("asn", "Unknown")
 
-    cache_set(indicator, "virustotal", result)
+    if ind_type == "domain":
+        def _fmt_date(ts):
+            if not ts:
+                return None
+            try:
+                return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, OSError):
+                return None
 
-    result["comments"] = _fetch_vt_comments(indicator, ind_type)
-    result["relations"] = _fetch_vt_relations(indicator, ind_type)
+        result["registrar"]       = attrs.get("registrar")
+        result["creation_date"]   = _fmt_date(attrs.get("creation_date"))
+        result["expiration_date"] = _fmt_date(attrs.get("expiration_date"))
+        result["last_update_date"] = _fmt_date(attrs.get("last_update_date"))
+
+    cache_set(indicator, "virustotal", result, user_id)
+
+    if light:
+        result["comments"] = []
+        result["relations"] = {}
+    else:
+        result["comments"] = _fetch_vt_comments(indicator, ind_type)
+        result["relations"] = _fetch_vt_relations(indicator, ind_type)
 
     return result

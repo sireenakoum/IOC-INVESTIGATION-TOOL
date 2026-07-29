@@ -1,21 +1,21 @@
 import os
 import datetime
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 from dotenv import load_dotenv
 
 load_dotenv()
 WHOIS_API_KEY = os.getenv("WHOIS_API_KEY")
 BASE_URL_WHOIS = "https://www.whoisxmlapi.com/whoisserver/WhoisService"
 
-def whois_check(indicator, ind_type):
+def whois_check(indicator, ind_type, user_id=LOCAL_USER_ID):
 
     # domain only guard
     if ind_type != "domain":
         return None
 
     # cache check first
-    cached = cache_get(indicator, "whois")
+    cached = cache_get(indicator, "whois", user_id)
     if cached:
         return cached
 
@@ -24,7 +24,7 @@ def whois_check(indicator, ind_type):
             "apiKey": WHOIS_API_KEY,
             "domainName": indicator,
             "outputFormat": "JSON"
-        })
+        }, timeout=10)
     except requests.exceptions.ConnectionError:
         print("  [WHOIS] Connection error")
         return None
@@ -39,8 +39,8 @@ def whois_check(indicator, ind_type):
         print(f"  [WHOIS] Error {response.status_code}: {response.text[:200]}")
         return None
 
-    whois_record = response.json().get("WhoisRecord", {})
-    registrant   = whois_record.get("registrant", {})
+    whois_record = response.json().get("WhoisRecord") or {}
+    registrant   = whois_record.get("registrant") or {}
 
     # privacy masking check
     org = (registrant.get("organization") or "").lower()
@@ -63,12 +63,12 @@ def whois_check(indicator, ind_type):
         "creation_date":   whois_record.get("createdDate"),
         "expiration_date": whois_record.get("expiresDate"),
         "updated_date":    whois_record.get("updatedDate"),
-        "name_servers":    whois_record.get("nameServers", {}).get("hostNames", []),
+        "name_servers":    (whois_record.get("nameServers") or {}).get("hostNames", []),
         "status":          whois_record.get("status", ""),
         "country":         registrant.get("country"),
         "privacy_masked":  privacy_masked,
         "domain_age_days": domain_age_days,
     }
 
-    cache_set(indicator, "whois", result)
+    cache_set(indicator, "whois", result, user_id)
     return result

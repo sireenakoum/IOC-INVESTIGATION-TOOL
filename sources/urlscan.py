@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,13 +10,13 @@ URLSCAN_API_KEY = os.getenv("URLSCAN_API_KEY")
 BASE_URL = "https://urlscan.io/api/v1/search/"
 
 
-def urlscan_check(indicator, ind_type):
+def urlscan_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if not URLSCAN_API_KEY:
         return None
     if ind_type not in ("ip", "domain"):
         return None
 
-    cached = cache_get(indicator, "urlscan")
+    cached = cache_get(indicator, "urlscan", user_id)
     if cached:
         return cached
 
@@ -44,7 +44,11 @@ def urlscan_check(indicator, ind_type):
         print(f"  [URLScan] Error {response.status_code}: {response.text[:200]}")
         return None
 
-    data    = response.json()
+    try:
+        data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print("  [URLScan] Empty or invalid response body, skipping")
+        return None
     results = data.get("results", [])
 
     if not results:
@@ -61,7 +65,11 @@ def urlscan_check(indicator, ind_type):
         if sub.status_code != 200:
             print(f"  [URLScan] Submission failed {sub.status_code}")
             return None
-        uuid = sub.json().get("uuid")
+        try:
+            uuid = sub.json().get("uuid")
+        except requests.exceptions.JSONDecodeError:
+            print("  [URLScan] Empty or invalid response body, skipping")
+            return None
         if not uuid:
             return None
         print(f"  [URLScan] Submitted (uuid: {uuid}), waiting up to 60s...")
@@ -74,7 +82,10 @@ def urlscan_check(indicator, ind_type):
             except Exception:
                 continue
             if r.status_code == 200:
-                scan_data = r.json()
+                try:
+                    scan_data = r.json()
+                except requests.exceptions.JSONDecodeError:
+                    continue
                 break
         if not scan_data:
             print(f"  [URLScan] Scan timed out")
@@ -98,7 +109,7 @@ def urlscan_check(indicator, ind_type):
             "ip":         page.get("ip"),
             "domains":    [page.get("domain")] if page.get("domain") and page.get("domain") != indicator else [],
         }
-        cache_set(indicator, "urlscan", result)
+        cache_set(indicator, "urlscan", result, user_id)
         return result
 
     malicious = any(
@@ -144,5 +155,5 @@ def urlscan_check(indicator, ind_type):
         "domains":    domains[:10],
     }
 
-    cache_set(indicator, "urlscan", result)
+    cache_set(indicator, "urlscan", result, user_id)
     return result

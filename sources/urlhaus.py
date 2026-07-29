@@ -1,7 +1,7 @@
 import os
 import requests
 from dotenv import load_dotenv
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 
 load_dotenv()
 URLHAUS_API_KEY = os.getenv("URLHAUS_API_KEY")
@@ -11,11 +11,11 @@ BASE_URL = "https://urlhaus-api.abuse.ch/v1/host/"
 _THREAT_PRIORITY = ["ransomware", "banker", "trojan", "dropper", "malware"]
 
 
-def urlhaus_check(indicator, ind_type):
+def urlhaus_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type not in ("ip", "domain"):
         return None
 
-    cached = cache_get(indicator, "urlhaus")
+    cached = cache_get(indicator, "urlhaus", user_id)
     if cached:
         return cached
 
@@ -33,7 +33,11 @@ def urlhaus_check(indicator, ind_type):
         print(f"  [URLhaus] Error {response.status_code}: {response.text[:200]}")
         return None
 
-    data = response.json()
+    try:
+        data = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print("  [URLhaus] Empty or invalid response body, skipping")
+        return None
 
     if data.get("query_status") in ("no_results", "invalid_host"):
         return None
@@ -71,5 +75,5 @@ def urlhaus_check(indicator, ind_type):
         "urls":       urls,
     }
 
-    cache_set(indicator, "urlhaus", result)
+    cache_set(indicator, "urlhaus", result, user_id)
     return result

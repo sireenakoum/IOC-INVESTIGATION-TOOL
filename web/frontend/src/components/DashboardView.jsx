@@ -1,25 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { VerdictPill } from '../utils/verdict'
+import { guessIndicatorType } from '../utils/indicatorType'
+import { timeAgo, parseServerTimestamp } from '../utils/time'
+import ExportMenu from './ExportMenu'
 
-function timeAgo(ts) {
-  if (!ts) return '—'
-  const diff = Date.now() - new Date(ts.replace(' ', 'T')).getTime()
-  if (isNaN(diff)) return ts
-  const m = Math.floor(diff / 60000)
-  if (m < 1)  return 'just now'
-  if (m < 60) return `${m}m ago`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
-}
-
-function guessType(indicator) {
-  if (!indicator) return 'Unknown'
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(indicator)) return 'IPv4'
-  if (/^[0-9a-f]{32}$/i.test(indicator))          return 'MD5'
-  if (/^[0-9a-f]{64}$/i.test(indicator))          return 'SHA256'
-  if (/^[0-9a-f]{40}$/i.test(indicator))          return 'SHA1'
-  return 'Domain'
+const ACTION_BTN = {
+  fontSize: 10,
+  fontFamily: 'JetBrains Mono, monospace',
+  padding: '3px 10px',
+  background: 'transparent',
+  border: 'none',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+  lineHeight: 1.4,
+  display: 'inline-flex',
+  alignItems: 'center',
 }
 
 function StatCard({ icon, label, value, subtitle, color }) {
@@ -38,7 +33,13 @@ function StatCard({ icon, label, value, subtitle, color }) {
   )
 }
 
-export default function DashboardView({ history, onScan, onRescan, onViewHistory, loading, error, searchInputRef }) {
+export default function DashboardView({ history, onScan, onRescan, onViewHistory, onViewPivot, onExportReport, onExportEvidenceCsv, onExportJson, onExportDocx, loading, error, searchInputRef, onStop }) {
+  const [, refreshTime] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => refreshTime(n => n + 1), 10000)
+    return () => clearInterval(id)
+  }, [])
+
   const [query, setQuery] = useState('')
 
   const totalScans   = history.length
@@ -46,7 +47,7 @@ export default function DashboardView({ history, onScan, onRescan, onViewHistory
   const safeScans    = history.filter(r => r.verdict === 'clean').length
   const lastScan     = history[0]
   const weekAgo      = Date.now() - 7 * 86400000
-  const thisWeek     = history.filter(r => new Date(r.timestamp.replace(' ', 'T')).getTime() > weekAgo).length
+  const thisWeek     = history.filter(r => (parseServerTimestamp(r.timestamp)?.getTime() ?? 0) > weekAgo).length
 
   function submit(fn) {
     const q = query.trim()
@@ -84,25 +85,32 @@ export default function DashboardView({ history, onScan, onRescan, onViewHistory
               onBlur={e  => e.target.style.borderColor = '#3c4a42'}
             />
           </div>
-          <button
-            onClick={() => submit(onScan)}
-            disabled={loading || !query.trim()}
-            className="flex items-center gap-2 transition-all active:scale-95 disabled:opacity-40 whitespace-nowrap shrink-0"
-            style={{
-              background: '#4edea3',
-              color: '#003824',
-              border: 'none',
-              borderRadius: 2,
-              padding: '10px 20px',
-              fontSize: 12,
-              fontWeight: 700,
-              fontFamily: 'JetBrains Mono, monospace',
-              letterSpacing: '0.07em',
-              cursor: 'pointer',
-            }}>
-            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>radar</span>
-            {loading ? 'SCANNING…' : 'SCAN'}
-          </button>
+          {loading ? (
+            <button
+              onClick={onStop}
+              className="flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap shrink-0"
+              style={{
+                background: '#ffb4ab', color: '#690005', border: 'none', borderRadius: 2,
+                padding: '10px 20px', fontSize: 12, fontWeight: 700,
+                fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.07em', cursor: 'pointer',
+              }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>stop</span>
+              STOP
+            </button>
+          ) : (
+            <button
+              onClick={() => submit(onScan)}
+              disabled={!query.trim()}
+              className="flex items-center gap-2 transition-all active:scale-95 disabled:opacity-40 whitespace-nowrap shrink-0"
+              style={{
+                background: '#4edea3', color: '#003824', border: 'none', borderRadius: 2,
+                padding: '10px 20px', fontSize: 12, fontWeight: 700,
+                fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.07em', cursor: 'pointer',
+              }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>radar</span>
+              SCAN
+            </button>
+          )}
           <button
             onClick={() => submit(onRescan)}
             disabled={loading || !query.trim()}
@@ -154,6 +162,7 @@ export default function DashboardView({ history, onScan, onRescan, onViewHistory
             No scans yet. Enter an indicator above to get started.
           </p>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr style={{ borderBottom: '1px solid #3c4a42' }}>
@@ -178,7 +187,7 @@ export default function DashboardView({ history, onScan, onRescan, onViewHistory
                   </td>
                   <td className="py-2.5 pr-4">
                     <span className="rounded uppercase" style={{ fontSize: 10, padding: '2px 8px', background: '#292a2d', color: '#4cd7f6', fontFamily: 'JetBrains Mono, monospace' }}>
-                      {guessType(row.indicator)}
+                      {guessIndicatorType(row.indicator)}
                     </span>
                   </td>
                   <td className="py-2.5 pr-4">
@@ -192,50 +201,48 @@ export default function DashboardView({ history, onScan, onRescan, onViewHistory
                   </td>
                   <td className="py-2.5 pl-2">
                     <div
-                      className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center rounded overflow-hidden"
-                      style={{ border: '1px solid #3c4a42', display: 'inline-flex' }}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity flex items-stretch"
+                      style={{ display: 'inline-flex' }}
                     >
                       <button
                         onClick={() => onViewHistory(row.indicator)}
-                        style={{
-                          fontSize: 10,
-                          color: '#4cd7f6',
-                          background: 'transparent',
-                          border: 'none',
-                          borderRight: '1px solid #3c4a42',
-                          padding: '3px 10px',
-                          fontFamily: 'JetBrains Mono, monospace',
-                          cursor: 'pointer',
-                          whiteSpace: 'nowrap',
-                        }}
+                        style={{ ...ACTION_BTN, color: '#4cd7f6', borderRight: '1px solid #3c4a42' }}
                         onMouseEnter={e => e.currentTarget.style.background = '#292a2d'}
                         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                       >
                         VIEW
                       </button>
                       <button
+                        onClick={() => onViewPivot(row.indicator)}
+                        style={{ ...ACTION_BTN, color: '#f59e0b', borderRight: '1px solid #3c4a42' }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#292a2d'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                      >
+                        PIVOT
+                      </button>
+                      <button
                         onClick={() => onRescan(row.indicator)}
-                        style={{
-                          fontSize: 10,
-                          color: '#4edea3',
-                          background: 'transparent',
-                          border: 'none',
-                          padding: '3px 10px',
-                          fontFamily: 'JetBrains Mono, monospace',
-                          cursor: 'pointer',
-                          whiteSpace: 'nowrap',
-                        }}
+                        style={{ ...ACTION_BTN, color: '#4edea3', borderRight: '1px solid #3c4a42' }}
                         onMouseEnter={e => e.currentTarget.style.background = '#292a2d'}
                         onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                       >
                         RESCAN
                       </button>
+                      <ExportMenu
+                        indicator={row.indicator}
+                        onExportReport={onExportReport}
+                        onExportCsv={onExportEvidenceCsv}
+                        onExportJson={onExportJson}
+                        onExportDocx={onExportDocx}
+                        variant="inline"
+                      />
                     </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

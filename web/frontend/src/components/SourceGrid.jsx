@@ -1,4 +1,4 @@
-import { getStyle, VERDICT_LABEL } from '../utils/verdict'
+import { FINDINGS_COLOR } from '../utils/verdictColors'
 
 const STREAM_KEYS = [
   ['vt',           'VirusTotal'],
@@ -26,8 +26,8 @@ const SHORT_LABELS = {
   'URLhaus':         'URLhaus',
   'ThreatFox':       'ThreatFox',
   'URLScan':         'URLScan',
-  'Hybrid Analysis': 'Hybrid',
-  'Google Intel':    'G.Intel',
+  'Hybrid Analysis': 'Hybrid Analysis',
+  'Google Intel':    'Google Intel',
 }
 
 const VERDICT_ICON = {
@@ -37,15 +37,6 @@ const VERDICT_ICON = {
   suspicious:  'bug_report',
   clean:       'check_circle',
   no_data:     'help',
-}
-
-const VERDICT_COLOR = {
-  high:        '#ffb4ab',
-  medium_risk: '#f97316',
-  low_risk:    '#eab308',
-  suspicious:  '#f59e0b',
-  clean:       '#4edea3',
-  no_data:     '#3c4a42',
 }
 
 const LABEL_STYLE = {
@@ -102,7 +93,7 @@ export default function SourceGrid({ perSource, partial = {}, loading = false })
   return (
     <div className="grid grid-cols-4 gap-2.5">
       {Object.entries(perSource).map(([name, src]) => {
-        const color = VERDICT_COLOR[src.verdict] || VERDICT_COLOR.no_data
+        const findingsColor = FINDINGS_COLOR[src.findings_tier] || FINDINGS_COLOR.none
         const count = src.has_data
           ? (src.evidence_count > 0
               ? `${src.evidence_count} finding${src.evidence_count !== 1 ? 's' : ''}`
@@ -129,19 +120,19 @@ export default function SourceGrid({ perSource, partial = {}, loading = false })
 
         return (
           <div key={name} className="transition-colors hover:brightness-110" style={{
-            background: '#1b1b1f', border: `1px solid ${color}33`,
+            background: '#1b1b1f', border: `1px solid ${findingsColor}33`,
             borderRadius: 4, padding: '10px 12px', minHeight: 80, overflow: 'hidden',
           }}>
             <p style={{ ...LABEL_STYLE, color: '#bbcabf' }}>
               {SHORT_LABELS[name] || name}
             </p>
             <p style={{
-              fontSize: 12, fontWeight: 700, color,
+              fontSize: 12, fontWeight: 700, color: findingsColor,
               fontFamily: 'Geist, sans-serif',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
               margin: '0 0 2px',
             }}>
-              {VERDICT_LABEL[src.verdict] || src.verdict}
+              {src.findings_label}
             </p>
             <p style={{
               fontSize: 11, color: '#86948a',

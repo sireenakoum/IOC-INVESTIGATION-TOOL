@@ -1,16 +1,35 @@
 import datetime
-import json
+import re
 
-def load_config(path="config.json"):
-    try:
-        with open(path) as f:
-            config = json.load(f)
-    except FileNotFoundError:
-        raise RuntimeError(
-            f"config.json not found — make sure it exists in the working directory (looked for: {path})"
-        )
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"config.json could not be parsed: {e}") from e
+from .enrichment import get_known_entities
+from .app_config import load_config as _load_raw_config
+
+def humanize_recency(dt, now=None):
+    now = now or datetime.datetime.now()
+    seconds = (now - dt).total_seconds()
+    if seconds < 3600:
+        mins = max(1, int(seconds // 60))
+        return f"{mins} minute{'s' if mins != 1 else ''} ago"
+    if seconds < 86400:
+        hours = int(seconds // 3600)
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(seconds // 86400)
+    if days < 14:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    return f"on {dt.strftime('%Y-%m-%d')}"
+
+def load_config():
+    """Build the processed config dict consumed by score_vt/score_otx/etc.
+
+    Sources the raw nested config from the DB-backed app_config store (see
+    sources/app_config.py) — config.json/config.seed.json is no longer read
+    at runtime, only used as the one-time import source. This function keeps
+    doing the same transformation it always did (lowercased tier1/tier2/
+    noise_tags sets, alias_lookup, flattened tag_weights): downstream
+    consumers expect that processed shape, not the raw one app_config.
+    load_config() returns.
+    """
+    config = _load_raw_config()
 
     try:
         scoring   = config["_meta"]["scoring"]
@@ -18,7 +37,7 @@ def load_config(path="config.json"):
         tier1_raw = config["tier1"]["vendors"]
         tier2_raw = config["tier2"]["vendors"]
     except KeyError as e:
-        raise RuntimeError(f"config.json is missing required key: {e.args[0]!r}") from e
+        raise RuntimeError(f"app_config DB is missing required key: {e.args[0]!r} — run scripts/import_config_to_db.py") from e
 
     # Build alias lookup: vt_engine_name (lower) → canonical name (lower)
     alias_lookup = {}
@@ -29,6 +48,7 @@ def load_config(path="config.json"):
 
     tier1 = set(v.lower() for v in tier1_raw)
     tier2 = set(v.lower() for v in tier2_raw)
+    noise_tags = {t.lower() for t in config.get("noise_tags", [])}
 
     # Flatten nested tag_weights into a single {tag: weight} dict
     raw_tags    = config.get("tag_weights", {})
@@ -52,11 +72,11 @@ def load_config(path="config.json"):
     return {
         "tier1":        tier1,
         "tier2":        tier2,
+        "noise_tags":   noise_tags,
         "alias_lookup": alias_lookup,
         "scoring":      scoring,
         "tag_weights":  tag_weights,
         "tag_cap":      tag_cap,
-        "apt_actors":   {a.lower() for a in config.get("apt_actors", [])},
         "suspicious_ports":    suspicious_ports,
         "suspicious_products": suspicious_products,
         "shodan_tags":         shodan_tags,
@@ -97,11 +117,11 @@ RECOMMENDATIONS = {
     "no_data":     "No data available",
 }
 
-# OTX pulse tags that indicate automated scanner/honeypot noise, not real threat intel
-NOISE_TAGS = {
-    "honeypot", "tpot", "sensor-tagged", "scanner", "portscan", "scanners",
-    "cowrie", "suricata", "dionaea", "kippo", "glastopf", "conpot", "mailoney",
-}
+# OTX pulse tags that indicate automated scanner/honeypot noise, not real threat intel.
+# Sourced from the DB-backed config's "noise_tags" (single shared definition — otx.py
+# imports this same constant instead of keeping its own hardcoded copy). Used as the
+# default here so score_otx() still works when called without an explicit config.
+NOISE_TAGS = load_config()["noise_tags"]
 
 def score_to_verdict(score):
     # Normalize to int to match display_score = int(min(raw_total, 20)).
@@ -120,6 +140,62 @@ def score_to_verdict(score):
         return "high"
 
 
+# Malicious/suspicious terms used to scan VT community-comment text (score_vt).
+# Compiled with word boundaries — naive substring matching on short terms like
+# "rat", "apt", "c2", "worm" produces false positives (e.g. "rat" inside
+# "operator", "apt" inside "adaptation") — same bug class already fixed once
+# in the enrichment matching, so it's built the same way here from the start.
+MALICIOUS_COMMENT_KEYWORDS = [
+    "malware", "trojan", "ransomware", "botnet", "backdoor",
+    "c2", "c&c", "command and control", "ddos", "exploit",
+    "phishing", "worm", "spyware", "rootkit", "keylogger",
+    "dropper", "cryptominer", "exfiltration", "malicious",
+    "compromised", "infected", "apt", "rat",
+]
+SUSPICIOUS_COMMENT_KEYWORDS = [
+    "suspicious", "scam", "spam", "fraud", "abuse", "blacklisted",
+    "flagged", "sketchy",
+]
+
+_MALICIOUS_COMMENT_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(kw) for kw in MALICIOUS_COMMENT_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+_SUSPICIOUS_COMMENT_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(kw) for kw in SUSPICIOUS_COMMENT_KEYWORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def evidence_count_to_findings_label(count):
+    """Buckets raw evidence_count into a volume label, independent of
+    risk scoring. First-pass thresholds — may need per-source tuning
+    later once real distributions are visible across many scans, since
+    evidence_count's natural range varies a lot by source (VT's
+    malicious count can run much higher than OTX's _count)."""
+    if count <= 0:
+        return "No Findings"
+    elif count <= 2:
+        return "Low Risk Findings"
+    elif count <= 9:
+        return "Medium Risk Findings"
+    else:
+        return "High Risk Findings"
+
+
+def evidence_count_to_findings_tier(count):
+    """Returns the raw tier key ('none'/'low'/'medium'/'high') so the
+    frontend can map it to a color independent of the risk verdict."""
+    if count <= 0:
+        return "none"
+    elif count <= 2:
+        return "low"
+    elif count <= 9:
+        return "medium"
+    else:
+        return "high"
+
+
 def score_vt(vt, config):
     """Score VirusTotal data. Returns per-source result dict.
 
@@ -134,7 +210,9 @@ def score_vt(vt, config):
 
     if not vt:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score        = 0
     breakdown    = []
@@ -229,25 +307,31 @@ def score_vt(vt, config):
         tier2_hits >= 2 or
         malicious >= 4
 )
-        if qualifies_for_recency:
+        if vt.get("rescan_timed_out"):
+            breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +0  (rescan still processing — recency not scored)")
+        elif vt.get("self_rescanned"):
+            breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +0  (rescanned via this tool just now — not a meaningful recency signal)")
+        elif qualifies_for_recency:
             if days_ago <= 7:
                 score += 2
-                breakdown.append(f"Last scanned {days_ago} days ago       → +2")
+                breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +2")
             elif days_ago <= 30:
                 score += 1
-                breakdown.append(f"Last scanned {days_ago} days ago       → +1")
+                breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +1")
             elif days_ago > 180:
-                breakdown.append(f"Last scanned {days_ago} days ago       → +0  (old, not penalized)")
+                breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +0  (old, not penalized)")
             else:
-                breakdown.append(f"Last scanned {days_ago} days ago       → +0")
+                breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +0")
         else:
-            breakdown.append(f"Last scanned {days_ago} days ago       → +0  (recency skipped — weak detections only)")
+            breakdown.append(f"Last scanned {humanize_recency(scan_date)}       → +0  (recency skipped — weak detections only)")
     else:
         if vt.get("last_scan_date"):
             breakdown.append(f"Recency skipped — no malicious detections")
 
     # Relations scoring — communicating and downloaded files with malicious detections
     relations = vt.get("relations") or {}
+    comm_mal = 0
+    dl_mal   = 0
     if relations:
         rel_cfg  = config.get("vt_relations", {})
         comm_mal = sum(1 for f in (relations.get("communicating_files") or []) if f.get("malicious", 0) > 0)
@@ -272,6 +356,7 @@ def score_vt(vt, config):
 
     # Community vote scoring — net positive votes signal community consensus on maliciousness
     comments = vt.get("comments") or []
+    vote_modifier = 0
     if comments:
         comm_cfg  = config.get("vt_comments", {})
         total_net = sum(c.get("votes_positive", 0) - c.get("votes_negative", 0) for c in comments)
@@ -282,17 +367,46 @@ def score_vt(vt, config):
 
         if total_net >= high_min:
             vote_modifier = comm_cfg.get("net_votes_high", 2)
-            breakdown.append(f"Community votes: net +{total_net} → +{vote_modifier}")
+            breakdown.append(f"Community comments: {len(comments)} found, net +{total_net} → +{vote_modifier}")
         elif total_net >= mid_min:
             vote_modifier = comm_cfg.get("net_votes_mid", 1)
-            breakdown.append(f"Community votes: net +{total_net} → +{vote_modifier}")
+            breakdown.append(f"Community comments: {len(comments)} found, net +{total_net} → +{vote_modifier}")
         elif total_net <= neg_max:
             vote_modifier = comm_cfg.get("net_votes_negative", -1)
-            breakdown.append(f"Community votes: net {total_net} → {vote_modifier}")
+            breakdown.append(f"Community comments: {len(comments)} found, net {total_net} → {vote_modifier}")
         else:
             vote_modifier = 0
+            breakdown.append(f"Community comments: {len(comments)} found, net {total_net:+d} → +0  (neutral)")
 
         score = max(score + vote_modifier, 0)
+    else:
+        breakdown.append(f"Community comments: none                    → +0")
+
+    # Comment text keyword scan — analyst comments often name the threat directly
+    # ("this is a Cobalt Strike C2", "known ransomware dropper"). Vote totals alone
+    # miss this; scan the actual comment text for malicious/suspicious terminology.
+    # Uses word-boundary regex (not substring containment) — short terms like "rat"
+    # or "apt" would otherwise false-positive inside words like "operator"/"adaptation".
+    comment_score      = 0
+    matched_malicious  = set()
+    matched_suspicious = set()
+
+    for c in comments:
+        text = c.get("text", "")
+        matched_malicious  |= {m.lower() for m in _MALICIOUS_COMMENT_RE.findall(text)}
+        matched_suspicious |= {m.lower() for m in _SUSPICIOUS_COMMENT_RE.findall(text)}
+
+    if matched_malicious:
+        comment_score = 3
+        breakdown.append(f"Comment keywords [{', '.join(sorted(matched_malicious))[:40]}] → +{comment_score}  (threat terminology)")
+    elif matched_suspicious:
+        comment_score = 1
+        breakdown.append(f"Comment keywords [{', '.join(sorted(matched_suspicious))[:40]}] → +{comment_score}  (suspicious terminology)")
+    elif comments:
+        breakdown.append(f"Comment keywords none                → +0")
+
+    comment_score = min(comment_score, 3)
+    score += comment_score
 
     # Detection ratio bonus — consensus across all engines
     total_engines = (
@@ -335,14 +449,24 @@ def score_vt(vt, config):
                 f"Detection ratio {ratio:.0%} ({vt['malicious']}/{total_engines}) → +0  (below threshold)"
             )
 
-    # Only assign a real verdict if there's something to judge; avoids false "clean" on empty responses
-    has_data = (
-        malicious > 0 or
-        suspicious > 0 or
-        len(found_tags) > 0 or
-        harmless > 0 or
-        undetected > 0
+    # Mirror every signal that can independently move the score above 0, not just
+    # raw detection counts — otherwise a source can score non-clean while its own
+    # findings_label still reads "No Findings" (e.g. tags/comments flagged it but
+    # no engine marked it malicious).
+    suspicious_evidence = suspicious if suspicious >= 3 else 0
+    tag_evidence         = len(found_tags)
+    vote_evidence        = 1 if vote_modifier > 0 else 0
+    keyword_evidence     = len(matched_malicious) + len(matched_suspicious)
+
+    evidence_count = (
+        malicious + comm_mal + dl_mal +
+        suspicious_evidence + tag_evidence + vote_evidence + keyword_evidence
     )
+
+    # Only assign a real verdict if there's something to judge; avoids false "clean" on empty
+    # responses. Built from evidence_count plus harmless/undetected (a 100%-clean scan is still
+    # "data", just not "evidence") so has_data can't disagree with evidence_count/findings_label.
+    has_data = evidence_count > 0 or harmless > 0 or undetected > 0
 
     score = min(score, 18)
 
@@ -351,9 +475,11 @@ def score_vt(vt, config):
     return {
         "verdict":        verdict,
         "score":          score,
-        "evidence_count": malicious,
+        "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 
@@ -361,18 +487,19 @@ def score_otx(otx, config=None):
     """Score AlienVault OTX data. Returns per-source result dict.
 
     Scoring layers (additive, capped at 15):
-      1. Pulse count      — how widely tracked the IP is across OTX feeds
-      2. Reputation       — OTX community reputation score (negative = flagged)
-      3. Recent pulses    — pulses mentioning 2025/2026 indicate current activity
-      4. Pulse tags       — weighted tags on individual pulses (noise tags excluded)
-      5. Adversary        — named APT/adversary attribution is high-signal
-      6. Malware families — named family in a pulse stands on its own
-      7. Passive DNS      — recent passive DNS activity corroborates the threat
+      1. Reputation       — OTX community reputation score (negative = flagged)
+      2. Recent pulses    — pulses mentioning 2025/2026 indicate current activity
+      3. Pulse tags       — weighted tags on individual pulses (noise tags excluded)
+      4. Adversary        — named APT/adversary attribution is high-signal
+      5. Malware families — named family in a pulse stands on its own
+      6. Passive DNS      — recent passive DNS activity corroborates the threat
     """
 
     if not otx:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score     = 0
     breakdown = []
@@ -380,6 +507,7 @@ def score_otx(otx, config=None):
     pulse_count   = otx.get("pulse_count", 0)
     pulse_details = otx.get("pulse_details", [])
     reputation    = otx.get("reputation", 0)
+    noise_tags    = config.get("noise_tags", NOISE_TAGS) if config else NOISE_TAGS
 
     if reputation < 0:
         score += 1
@@ -394,12 +522,13 @@ def score_otx(otx, config=None):
     apt_hit            = False
     recent_pulse_found = False
     non_noise_count    = 0
+    known_apt_actors   = get_known_entities("apt_actor")
 
     for p in pulse_details:
         p_tags = {t.lower() for t in p.get("tags", [])}
 
         # Skip pulses whose tags are entirely noise (honeypots, honeypot sensors, etc.)
-        if p_tags and p_tags.issubset(NOISE_TAGS):
+        if p_tags and p_tags.issubset(noise_tags):
             continue
 
         non_noise_count += 1
@@ -418,17 +547,17 @@ def score_otx(otx, config=None):
 
         # Pulse tag scoring
         if config:
-            for tag in p_tags - NOISE_TAGS:
+            for tag in p_tags - noise_tags:
                 w = config["tag_weights"].get(tag, 0)
                 if w >= 2:
                     pulse_tag_score += w
                     pulse_tag_contrib[tag] = pulse_tag_contrib.get(tag, 0) + w
 
-        # Adversary attribution
+        # Adversary attribution — matched against the self-enriching known_entities DB
+        # (live-learned from OTX/ThreatFox + MITRE ATT&CK bulk import), not config.json.
         adversary = p.get("adversary", "")
         if adversary:
-            apt_actors = config.get("apt_actors", set()) if config else set()
-            if adversary.lower() in apt_actors:
+            if adversary.lower() in known_apt_actors:
                 adversary_score = min(adversary_score + 4, 4)
                 apt_hit = True
 
@@ -456,32 +585,6 @@ def score_otx(otx, config=None):
         qualifying_count = pulse_count if non_noise_count > 0 else 0
     else:
         qualifying_count = pulse_count
-
-    # Pulse volume alone (no adversary/tag/family/ATT&CK signal in any sampled pulse)
-    # is capped at +1 — many pulses just mean "widely sighted," not "confirmed malicious."
-    if qualifying_count >= 10:
-        pulse_score = 4 if has_qualitative_signal else 1
-    elif qualifying_count >= 5:
-        pulse_score = 3 if has_qualitative_signal else 1
-    elif qualifying_count >= 2:
-        pulse_score = 2 if has_qualitative_signal else 1
-    elif qualifying_count >= 1:
-        pulse_score = 1
-    else:
-        pulse_score = 0
-
-    score += pulse_score
-
-    if pulse_score > 0 and qualifying_count >= 2 and not has_qualitative_signal:
-        breakdown.append(
-            f"OTX pulses {qualifying_count} (non-noise) → +{pulse_score}  (capped — volume only, no malware/adversary/ATT&CK signal)"
-        )
-    elif pulse_score > 0:
-        breakdown.append(f"OTX pulses {qualifying_count} (non-noise) → +{pulse_score}")
-    elif pulse_count > 0 and pulse_details and qualifying_count == 0:
-        breakdown.append(f"OTX pulses {pulse_count:<8} → +0  (all noise-tagged)")
-    else:
-        breakdown.append(f"OTX pulses {qualifying_count} (non-noise) → +0")
 
     if recent_pulse_found:
         score += 1
@@ -526,11 +629,11 @@ def score_otx(otx, config=None):
         days_since = (datetime.datetime.now() - latest_pdns).days
         if days_since <= 30 and (pulse_count > 0 or reputation < 0):
             score += 1
-            breakdown.append(f"Passive DNS last seen {days_since} days ago → +1")
+            breakdown.append(f"Passive DNS last seen {humanize_recency(latest_pdns)} → +1")
         elif days_since <= 30:
-            breakdown.append(f"Passive DNS last seen {days_since} days ago → +0  (skipped — no pulse data to corroborate)")
+            breakdown.append(f"Passive DNS last seen {humanize_recency(latest_pdns)} → +0  (skipped — no pulse data to corroborate)")
         else:
-            breakdown.append(f"Passive DNS last seen {days_since} days ago → +0")
+            breakdown.append(f"Passive DNS last seen {humanize_recency(latest_pdns)} → +0")
     else:
         breakdown.append(f"Passive DNS last seen unknown  → +0")
 
@@ -618,12 +721,27 @@ def score_otx(otx, config=None):
 
     verdict = score_to_verdict(score) if has_data else "no_data"
 
+    # evidence_count must be built from the same signals as findings_label below —
+    # qualifying_count alone missed reputation-only hits (a negative OTX reputation
+    # can score and verdict non-clean with zero non-noise pulses).
+    otx_evidence_count = qualifying_count + (1 if reputation < 0 else 0)
+
+    otx_findings_label = evidence_count_to_findings_label(otx_evidence_count)
+    otx_findings_tier  = evidence_count_to_findings_tier(otx_evidence_count)
+    if not has_qualitative_signal and otx_findings_tier in ("medium", "high"):
+        # Volume alone (no malware family / ATT&CK technique / adversary
+        # attribution) shouldn't read as Medium/High Findings.
+        otx_findings_label = "Low Risk Findings"
+        otx_findings_tier  = "low"
+
     return {
         "verdict":        verdict,
         "score":          score,
-        "evidence_count": pulse_count,
+        "evidence_count": otx_evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": otx_findings_label,
+        "findings_tier":  otx_findings_tier,
     }
 
 
@@ -643,7 +761,9 @@ def score_abuse(abuse, config=None, asn=None):
 
     if not abuse:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score          = 0
     breakdown      = []
@@ -669,14 +789,14 @@ def score_abuse(abuse, config=None, asn=None):
             days_ago = (datetime.datetime.now() - last_dt).days
             if days_ago <= 7:
                 score += 2
-                breakdown.append(f"Last reported {days_ago} days ago       → +2  (very recent)")
+                breakdown.append(f"Last reported {humanize_recency(last_dt)}       → +2  (very recent)")
             elif days_ago <= 30:
                 score += 1
-                breakdown.append(f"Last reported {days_ago} days ago       → +1  (recent)")
+                breakdown.append(f"Last reported {humanize_recency(last_dt)}       → +1  (recent)")
             elif days_ago <= 90:
-                breakdown.append(f"Last reported {days_ago} days ago       → +0")
+                breakdown.append(f"Last reported {humanize_recency(last_dt)}       → +0")
             else:
-                breakdown.append(f"Last reported {days_ago} days ago       → +0  (old)")
+                breakdown.append(f"Last reported {humanize_recency(last_dt)}       → +0  (old)")
         except (ValueError, TypeError):
             breakdown.append(f"Last reported date unknown  → +0")
     else:
@@ -740,12 +860,18 @@ def score_abuse(abuse, config=None, asn=None):
     score = min(score, 15)
     verdict = score_to_verdict(score) if has_data else "no_data"
 
+    # A Tor exit-node flag alone can score and verdict non-clean even with zero
+    # reports — count it so findings_label doesn't read "No Findings" in that case.
+    evidence_count = distinct_users + (1 if is_tor else 0)
+
     return {
         "verdict":        verdict,
         "score":          score,
-        "evidence_count": distinct_users,
+        "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 def score_shodan(shodan, config=None, censys_hostnames=None):
@@ -766,12 +892,13 @@ def score_shodan(shodan, config=None, censys_hostnames=None):
 
     if not shodan:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score     = 0
     breakdown = []
 
-    suspicious_ports    = config.get("suspicious_ports", {})    if config else {}
     suspicious_products = config.get("suspicious_products", {}) if config else {}
     shodan_tag_weights  = config.get("shodan_tags", {})         if config else {}
 
@@ -792,8 +919,6 @@ def score_shodan(shodan, config=None, censys_hostnames=None):
 
     if vulns:
         breakdown.append(f"  CVEs: {', '.join(vulns[:5])}")
-
-    breakdown.append("Suspicious ports → skipped (requires Censys corroboration)")
 
     product_score    = 0
     flagged_products = []
@@ -853,8 +978,10 @@ def score_shodan(shodan, config=None, censys_hostnames=None):
 
     score = min(score, 15)
 
-    # Minimum evidence threshold: open ports and missing hostname alone cannot raise the verdict
-    meets_min_threshold = vuln_count > 0 or product_score > 0 or has_high_weight_tag
+    # Minimum evidence threshold: open ports and missing hostname alone cannot raise the verdict.
+    # Mirrors Censys's threshold (which also allows cumulative tag_score >= 3, not just a single
+    # high-weight tag) so low-weight-but-plural tags aren't silently discarded here either.
+    meets_min_threshold = vuln_count > 0 or product_score > 0 or has_high_weight_tag or tag_score >= 3
 
     if has_data and meets_min_threshold:
         verdict = score_to_verdict(score)
@@ -863,13 +990,19 @@ def score_shodan(shodan, config=None, censys_hostnames=None):
     else:
         verdict = "no_data"
 
+    # Include flagged_tags (matching Censys's flagged_labels) so a tag-driven non-clean
+    # verdict isn't paired with an evidence_count of 0 / "No Findings".
+    evidence_count = len(vulns) + len(flagged_products) + len(flagged_tags)
+
     return {
         "verdict":        verdict,
         "score":          score,
-        "evidence_count": len(vulns) + len(flagged_products),
+        "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
         "gated":          False,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 
@@ -889,7 +1022,9 @@ def score_censys(censys, config=None):
 
     if not censys:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score     = 0
     breakdown = []
@@ -986,197 +1121,8 @@ def score_censys(censys, config=None):
         "has_data":       has_data,
         "breakdown":      breakdown,
         "gated":          False,
-    }
-
-
-def score_shodan_censys(shodan, censys, config):
-    """Confidence layer — Shodan + Censys cross-source corroboration.
-
-    Seven flat signals (+1 or +2 each) answer "do two independent scanners
-    agree?" rather than "how many items agree?". Total is capped at +4 so
-    this layer nudges verdicts rather than manufacturing them.
-    """
-
-    empty = {
-        "port_bonus":            0,
-        "cve_bonus":             0,
-        "product_bonus":         0,
-        "banner_bonus":          0,
-        "cert_bonus":            0,
-        "service_overlap_bonus": 0,
-        "recency_bonus":         0,
-        "favicon_bonus":         0,
-        "ssh_bonus":             0,
-        "total_bonus":           0,
-        "corroborated_ports":    [],
-        "corroborated_cves":     [],
-        "corroborated_products": [],
-        "corroborated_banners":  [],
-        "cert_match":            False,
-        "service_overlap_pct":   0,
-    }
-
-    if not isinstance(shodan, dict) or not isinstance(censys, dict):
-        return empty
-
-    suspicious_ports    = config.get("suspicious_ports", {})    if config else {}
-    suspicious_products = config.get("suspicious_products", {}) if config else {}
-
-    # Signal 1 — Suspicious port corroboration (flat +1)
-    # A port only qualifies if both scanners see it AND it's suspicious AND
-    # either source has a suspicious product on that port OR the port weight >= 3.
-    ports_shodan = {int(p) for p in shodan.get("ports", []) if str(p).isdigit()}
-    ports_censys = {int(p) for p in censys.get("ports", []) if str(p).isdigit()}
-    agreed_ports = ports_shodan & ports_censys
-
-    corroborated_ports = []
-    for port in agreed_ports:
-        port_str = str(port)
-        if port_str not in suspicious_ports:
-            continue
-        port_weight = suspicious_ports[port_str].get("weight", 0)
-
-        all_products_on_port = [
-            (svc.get("product") or "").lower()
-            for src in (shodan, censys)
-            for svc in src.get("services", [])
-            if svc.get("port") == port
-        ]
-        either_has_suspicious_product = any(
-            known in prod
-            for prod in all_products_on_port
-            for known in suspicious_products
-            if prod
-        )
-        if either_has_suspicious_product or port_weight >= 3:
-            corroborated_ports.append(port_str)
-
-    port_bonus = min(
-        sum(suspicious_ports[p].get("weight", 1) for p in corroborated_ports),
-        4,
-    ) if corroborated_ports else 0
-
-    # Signal 2 — CVE corroboration (flat +1)
-    shodan_cves       = set(shodan.get("vulns", []))
-    censys_cves       = set(censys.get("vulns", []))
-    shared_cves       = shodan_cves & censys_cves
-    corroborated_cves = sorted(shared_cves)
-    cve_bonus         = 1 if shared_cves else 0
-
-    # Signal 3 — Suspicious product corroboration (flat +1)
-    corroborated_products = []
-    for key in suspicious_products:
-        shodan_has = any(
-            key in (svc.get("product") or "").lower()
-            for svc in shodan.get("services", [])
-        )
-        censys_has = any(
-            key in (svc.get("product") or "").lower()
-            for svc in censys.get("services", [])
-        )
-        if shodan_has and censys_has:
-            corroborated_products.append(key)
-    product_bonus = 1 if corroborated_products else 0
-
-    # Signal 4 — Banner/version corroboration (flat +1)
-    # Exact product+version match on the same port, OR suspicious product match.
-    corroborated_banners = []
-    for s_svc in shodan.get("services", []):
-        s_product = (s_svc.get("product") or "").lower().strip()
-        s_version = (s_svc.get("version") or "").lower().strip()
-        if not s_product or s_product == "unknown":
-            continue
-        s_port = s_svc.get("port")
-        for c_svc in censys.get("services", []):
-            if c_svc.get("port") != s_port:
-                continue
-            c_product = (c_svc.get("product") or "").lower().strip()
-            c_version = (c_svc.get("version") or "").lower().strip()
-            product_match  = s_product == c_product and c_product != ""
-            version_match  = s_version == c_version and s_version != "" and c_version != ""
-            is_suspicious  = any(known in s_product for known in suspicious_products)
-            if (product_match and version_match) or (product_match and is_suspicious):
-                banner = f"{s_product} {s_version}".strip()
-                if banner not in corroborated_banners:
-                    corroborated_banners.append(banner)
-    banner_bonus = 1 if corroborated_banners else 0
-
-    # Signal 5 — TLS certificate fingerprint match (flat +2)
-    # Certificates are cryptographically unique, so a match is very high-confidence.
-    shodan_cert  = shodan.get("ssl_sha256") or None
-    censys_fps   = [
-        c.get("fingerprint", "").lower()
-        for c in censys.get("certificates", [])
-        if c.get("fingerprint")
-    ]
-    cert_match   = shodan_cert is not None and shodan_cert.lower() in censys_fps
-    cert_bonus   = 2 if cert_match else 0
-
-    # Signal 6 — Service overlap (flat +1, requires >= 3 ports on each side)
-    # Common web/infra ports excluded so routine overlap doesn't score.
-    COMMON_PORTS          = {80, 443, 22, 21, 25, 53, 8080, 8443}
-    ports_s_filt          = ports_shodan - COMMON_PORTS
-    ports_c_filt          = ports_censys - COMMON_PORTS
-    service_overlap_bonus = 0
-    service_overlap_pct   = 0
-    if len(ports_shodan) >= 3 and len(ports_censys) >= 3:
-        union = ports_s_filt | ports_c_filt
-        if union:
-            overlap_ratio       = len(ports_s_filt & ports_c_filt) / len(union)
-            service_overlap_pct = round(overlap_ratio * 100, 1)
-            if overlap_ratio >= 0.70:
-                service_overlap_bonus = 1
-
-    # Signal 7 — Recency corroboration (flat +1, both must be scanned within 7 days)
-    recency_bonus = 0
-    try:
-        shodan_dt   = datetime.datetime.fromisoformat(
-            shodan.get("last_update", "").replace("Z", "")[:19]
-        )
-        censys_dt   = datetime.datetime.fromisoformat(
-            censys.get("last_update", "").replace("Z", "")[:19]
-        )
-        now = datetime.datetime.now()
-        if (now - shodan_dt).days <= 7 and (now - censys_dt).days <= 7:
-            recency_bonus = 1
-    except (ValueError, TypeError, AttributeError):
-        pass
-
-    # Signal 8 — Favicon hash corroboration (flat +1)
-    shodan_favicon  = shodan.get("favicon_hash")
-    censys_favicons = censys.get("favicon_hashes", [])
-    favicon_bonus   = 1 if (shodan_favicon is not None and shodan_favicon in censys_favicons) else 0
-
-    # Signal 9 — SSH host key fingerprint corroboration (flat +1)
-    shodan_ssh_fp  = shodan.get("ssh_fingerprint")
-    censys_ssh_fps = censys.get("ssh_host_key_fingerprints", [])
-    ssh_bonus      = 1 if (shodan_ssh_fp is not None and shodan_ssh_fp in censys_ssh_fps) else 0
-
-    total_bonus = min(
-        port_bonus + cve_bonus + product_bonus +
-        banner_bonus + cert_bonus +
-        service_overlap_bonus + recency_bonus +
-        favicon_bonus + ssh_bonus,
-        4,
-    )
-
-    return {
-        "port_bonus":            port_bonus,
-        "cve_bonus":             cve_bonus,
-        "product_bonus":         product_bonus,
-        "banner_bonus":          banner_bonus,
-        "cert_bonus":            cert_bonus,
-        "service_overlap_bonus": service_overlap_bonus,
-        "recency_bonus":         recency_bonus,
-        "favicon_bonus":         favicon_bonus,
-        "ssh_bonus":             ssh_bonus,
-        "total_bonus":           total_bonus,
-        "corroborated_ports":    corroborated_ports,
-        "corroborated_cves":     corroborated_cves,
-        "corroborated_products": corroborated_products,
-        "corroborated_banners":  corroborated_banners,
-        "cert_match":            cert_match,
-        "service_overlap_pct":   service_overlap_pct,
+        "findings_label": evidence_count_to_findings_label(len(vulns) + len(flagged_products) + len(flagged_labels)),
+        "findings_tier":  evidence_count_to_findings_tier(len(vulns) + len(flagged_products) + len(flagged_labels)),
     }
 
 
@@ -1244,7 +1190,9 @@ def score_whois(whois, config=None):
 def score_greynoise(greynoise, config=None):
     if not greynoise:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": [], "is_noise": False}
+                "evidence_count": 0, "has_data": False, "breakdown": [], "is_noise": False,
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     classification = greynoise.get("classification")
     actor          = greynoise.get("actor")
@@ -1260,6 +1208,8 @@ def score_greynoise(greynoise, config=None):
             "has_data":       True,
             "breakdown":      breakdown,
             "is_noise":       True,
+            "findings_label": evidence_count_to_findings_label(0),
+            "findings_tier":  evidence_count_to_findings_tier(0),
         }
 
     score = 0
@@ -1288,20 +1238,30 @@ def score_greynoise(greynoise, config=None):
     score    = min(score, 6)
     has_data = classification is not None
 
+    # Any of these can independently push score above 0 — not just a "malicious"
+    # classification — so all of them must count as evidence, not just the first.
+    # Guarded by has_data so evidence_count can never be nonzero while has_data is False
+    # (e.g. actor/cve present without a classification).
+    evidence_count = 1 if (has_data and (classification in ("malicious", "suspicious") or actor or cve)) else 0
+
     return {
         "verdict":        score_to_verdict(score) if has_data else "no_data",
         "score":          score,
-        "evidence_count": 1 if classification == "malicious" else 0,
+        "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
         "is_noise":       False,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 
 def score_urlhaus(urlhaus, config=None):
     if not urlhaus:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score     = 0
     breakdown = []
@@ -1340,13 +1300,17 @@ def score_urlhaus(urlhaus, config=None):
         "evidence_count": url_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(url_count),
+        "findings_tier":  evidence_count_to_findings_tier(url_count),
     }
 
 
 def score_threatfox(threatfox, config=None):
     if not threatfox:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score            = 0
     breakdown        = []
@@ -1424,13 +1388,17 @@ def score_threatfox(threatfox, config=None):
         "evidence_count": ioc_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(ioc_count),
+        "findings_tier":  evidence_count_to_findings_tier(ioc_count),
     }
 
 
 def score_hybrid(hybrid, config=None):
     if not hybrid:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score        = 0
     breakdown    = []
@@ -1472,19 +1440,31 @@ def score_hybrid(hybrid, config=None):
     score    = min(score, 6)
     has_data = bool(hybrid)
 
+    # The verdict-only fallback path (no threat_score) and the family field can each
+    # push score above 0 independently of the threat_score >= 20 check — count them too.
+    has_threat_signal = (
+        (threat_score is not None and threat_score >= 20) or
+        (threat_score is None and hybrid.get("verdict", "") in ("malicious", "suspicious"))
+    )
+    evidence_count = (1 if has_threat_signal else 0) + (1 if family else 0)
+
     return {
         "verdict":        score_to_verdict(score) if has_data else "no_data",
         "score":          score,
-        "evidence_count": 1 if (threat_score or 0) >= 20 else 0,
+        "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 
 def score_urlscan(urlscan, config=None):
     if not urlscan:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     score      = 0
     breakdown  = []
@@ -1554,12 +1534,24 @@ def score_urlscan(urlscan, config=None):
 
     has_data = bool(urlscan)
 
+    # Categories, page-title keywords, and phishing-keyword domains each score
+    # independently of the "malicious" flag — count whichever of them fired so
+    # evidence_count can't read 0 while one of them pushed the verdict up.
+    evidence_count = (
+        (1 if malicious else 0) +
+        len(categories) +
+        (1 if title_score > 0 else 0) +
+        len(flagged_domains)
+    )
+
     return {
         "verdict":        score_to_verdict(score) if has_data else "no_data",
         "score":          score,
-        "evidence_count": 1 if malicious else 0,
+        "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 
@@ -1578,7 +1570,9 @@ def score_google_intel(gi, config=None):
     """
     if not gi:
         return {"verdict": "no_data", "score": 0,
-                "evidence_count": 0, "has_data": False, "breakdown": []}
+                "evidence_count": 0, "has_data": False, "breakdown": [],
+                "findings_label": evidence_count_to_findings_label(0),
+                "findings_tier": evidence_count_to_findings_tier(0)}
 
     gi_cfg        = (config or {}).get("google_intel", {}) if config else {}
     scoring       = gi_cfg.get("scoring", {})
@@ -1683,12 +1677,8 @@ def score_google_intel(gi, config=None):
     else:
         breakdown.append(f"Co-mentioned IOCs: none → sent to pivot scan")
 
-    if "ScaleSerp" in search_method:
-        breakdown.append("Search method: ScaleSerp (Google dorks)")
-    elif "SerpApi" in search_method:
-        breakdown.append("Search method: SerpApi (Google dorks)")
-    elif search_method and search_method != "none":
-        breakdown.append("Search method: scraper fallback")
+    if search_method == "DDG":
+        breakdown.append("Search method: DuckDuckGo")
     else:
         breakdown.append("Search method: none")
 
@@ -1702,6 +1692,8 @@ def score_google_intel(gi, config=None):
         "evidence_count": evidence_count,
         "has_data":       has_data,
         "breakdown":      breakdown,
+        "findings_label": evidence_count_to_findings_label(evidence_count),
+        "findings_tier":  evidence_count_to_findings_tier(evidence_count),
     }
 
 
@@ -1747,7 +1739,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
 
     Gated sources (CDN/cloud ASNs with score==0) are excluded from the average.
     One override rule applies: if any source returns High, the final verdict is raised
-    to at least Medium risk. A Shodan+Censys corroboration bonus is added on top.
+    to at least Medium risk.
     """
 
     if config is None:
@@ -1802,11 +1794,11 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             "contribution":          {name: "no data" for name in sources},
             "per_source": {
                 name: {
-                    "verdict":         r["verdict"],
-                    "verdict_display": VERDICT_DISPLAY.get(r["verdict"], r["verdict"]),
                     "score":           r["score"],
                     "evidence_count":  r["evidence_count"],
                     "has_data":        r["has_data"],
+                    "findings_label":  r.get("findings_label", evidence_count_to_findings_label(r["evidence_count"])),
+                    "findings_tier":   r.get("findings_tier", evidence_count_to_findings_tier(r["evidence_count"])),
                     **( {"is_noise": True} if r.get("is_noise") else {} ),
                 }
                 for name, r in sources.items()
@@ -1817,14 +1809,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
                 "score_modifier": 0,
                 "verdict":        whois_result.get("verdict", "no_data"),
                 "breakdown":      whois_result.get("breakdown", []),
-            },
-            "shodan_censys_corroboration": {
-                "port_bonus": 0, "cve_bonus": 0, "product_bonus": 0,
-                "banner_bonus": 0, "cert_bonus": 0, "service_overlap_bonus": 0,
-                "recency_bonus": 0, "favicon_bonus": 0, "ssh_bonus": 0, "total_bonus": 0,
-                "corroborated_ports": [], "corroborated_cves": [],
-                "corroborated_products": [], "corroborated_banners": [],
-                "cert_match": False, "service_overlap_pct": 0,
             },
             "spamhaus_drop": spamhaus_drop,
         }
@@ -1841,6 +1825,12 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     #   final_score <= 0  → +0  (no real signal, WHOIS contributes nothing)
     #   final_score < 4   → max +1  (weak signal, WHOIS nudges slightly)
     #   final_score >= 4  → max +2  (real signal exists, WHOIS can reinforce)
+    pivot_scored = score_pivot(pivot_result, config)
+    pivot_bonus  = pivot_scored["score"]
+    if pivot_bonus > 0:
+        final_score   = min(final_score + pivot_bonus, 20)
+        final_verdict = score_to_verdict(final_score)
+
     whois_modifier = 0
     if whois and whois_result.get("has_data"):
         if final_score <= 0:
@@ -1854,24 +1844,11 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
     # Recompute verdict after modifier
     final_verdict = score_to_verdict(final_score)
 
-    # Cross-source corroboration bonus (Shodan + Censys)
-    corroboration = score_shodan_censys(shodan, censys, config)
-    corr_bonus    = corroboration["total_bonus"]
-    if corr_bonus > 0:
-        final_score  = min(final_score + corr_bonus, 20)
-        final_verdict = score_to_verdict(final_score)
-
     spamhaus_bonus = 0
     if spamhaus_drop and spamhaus_drop.get("listed"):
         spamhaus_bonus = 4
         final_score    = min(final_score + spamhaus_bonus, 20)
         final_verdict  = score_to_verdict(final_score)
-
-    pivot_scored = score_pivot(pivot_result, config)
-    pivot_bonus  = pivot_scored["score"]
-    if pivot_bonus > 0:
-        final_score   = min(final_score + pivot_bonus, 20)
-        final_verdict = score_to_verdict(final_score)
 
     vt_country      = (vt or {}).get("country", "")
     censys_country  = (censys or {}).get("country", "") if isinstance(censys, dict) else ""
@@ -1893,11 +1870,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         pct_qualifies     = _active_raw > 0 and (r["score"] / _active_raw * 100) >= 15
         if verdict_qualifies or score_qualifies or pct_qualifies:
             triggered_by.append(name)
-    if pivot_bonus >= 4:
-        if "Pivot" not in triggered_by:
-            triggered_by.append("Pivot")
-    elif pivot_bonus > 0:
-        pass  # handled in display below
     corroboration_count = len(triggered_by)
     active_count        = len(active)
 
@@ -1926,28 +1898,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         asname = (spamhaus_drop or {}).get("asname", "")
         full_breakdown.append(f"ASN on Spamhaus DROP list ({asname}) → +{spamhaus_bonus}")
 
-    if corr_bonus > 0:
-        full_breakdown.append(f"── Shodan+Censys Corroboration ──")
-        if corroboration["corroborated_ports"]:
-            full_breakdown.append(f"Ports confirmed: {', '.join(corroboration['corroborated_ports'])} → +{corroboration['port_bonus']}")
-        if corroboration["corroborated_cves"]:
-            full_breakdown.append(f"CVEs confirmed: {', '.join(corroboration['corroborated_cves'])} → +{corroboration['cve_bonus']}")
-        if corroboration["corroborated_products"]:
-            full_breakdown.append(f"Products confirmed: {', '.join(corroboration['corroborated_products'])} → +{corroboration['product_bonus']}")
-        if corroboration["corroborated_banners"]:
-            full_breakdown.append(f"Banners confirmed: {', '.join(corroboration['corroborated_banners'])} → +{corroboration['banner_bonus']}")
-        if corroboration.get("cert_match"):
-            full_breakdown.append(f"TLS cert fingerprint match → +{corroboration['cert_bonus']}")
-        if corroboration.get("service_overlap_bonus", 0) > 0:
-            full_breakdown.append(f"Service overlap {corroboration.get('service_overlap_pct', 0)}% → +{corroboration['service_overlap_bonus']}")
-        if corroboration.get("recency_bonus", 0) > 0:
-            full_breakdown.append(f"Both scanned within 7 days → +{corroboration['recency_bonus']}")
-        if corroboration.get("favicon_bonus", 0) > 0:
-            full_breakdown.append(f"Favicon hash match → +{corroboration['favicon_bonus']}")
-        if corroboration.get("ssh_bonus", 0) > 0:
-            full_breakdown.append(f"SSH host key fingerprint match → +{corroboration['ssh_bonus']}")
-        full_breakdown.append(f"Corroboration total (cap 4) → +{corr_bonus}")
-
     if pivot_scored["has_data"]:
         full_breakdown.append(f"── Pivot ──")
         full_breakdown.extend((pivot_result or {}).get("pivot_detail", []))
@@ -1961,8 +1911,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         score_components["Spamhaus DROP"] = spamhaus_bonus
     if whois_modifier > 0:
         score_components["WHOIS"] = whois_modifier
-    if corr_bonus > 0:
-        score_components["Corroboration"] = corr_bonus
     if pivot_bonus > 0:
         score_components["Pivot"] = pivot_bonus
 
@@ -1978,7 +1926,7 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             pct = round(max(r["score"], 0) / raw_total * 100)
             contribution[name] = f"{pct}%"
 
-    for bonus_name in ("Spamhaus DROP", "WHOIS", "Corroboration", "Pivot"):
+    for bonus_name in ("Spamhaus DROP", "WHOIS", "Pivot"):
         if bonus_name in score_components:
             pct = round(score_components[bonus_name] / raw_total * 100)
             contribution[bonus_name] = f"{pct}%"
@@ -1996,11 +1944,11 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
         "contribution":          contribution,
         "per_source": {
             name: {
-                "verdict":         r["verdict"],
-                "verdict_display": VERDICT_DISPLAY.get(r["verdict"], r["verdict"]),
                 "score":           r["score"],
                 "evidence_count":  r["evidence_count"],
                 "has_data":        r["has_data"],
+                "findings_label":  r.get("findings_label", evidence_count_to_findings_label(r["evidence_count"])),
+                "findings_tier":   r.get("findings_tier", evidence_count_to_findings_tier(r["evidence_count"])),
                 **( {"is_noise": True} if r.get("is_noise") else {} ),
             }
             for name, r in sources.items()
@@ -2012,7 +1960,6 @@ def combined_verdict(vt=None, otx=None, abuse=None, shodan=None, whois=None,
             "verdict":        whois_result.get("verdict", "no_data"),
             "breakdown":      whois_result.get("breakdown", []),
         },
-        "shodan_censys_corroboration": corroboration,
         "geo_mismatch":               geo_mismatch,
         "geo_countries":              sorted(geo_countries),
         "spamhaus_drop":              spamhaus_drop,

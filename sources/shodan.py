@@ -1,6 +1,6 @@
 import os,json
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,10 +8,10 @@ SHODAN_API_KEY = os.getenv("SHODAN_API_KEY")
 
 BASE_URL= "https://api.shodan.io"
 
-def shodan_check(indicator,ind_type):
+def shodan_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type!="ip":
         return None
-    cached= cache_get(indicator,"shodan")
+    cached= cache_get(indicator, "shodan", user_id)
     if cached:
         return cached
     url = f"{BASE_URL}/shodan/host/{indicator}"
@@ -96,5 +96,5 @@ def shodan_check(indicator,ind_type):
         "ssl_sha256":  ssl_sha256,
     }
 
-    cache_set(indicator, "shodan", result)
+    cache_set(indicator, "shodan", result, user_id)
     return result

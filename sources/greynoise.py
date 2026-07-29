@@ -1,14 +1,14 @@
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 
 BASE_URL = "https://api.greynoise.io/v3/community"
 
 
-def greynoise_check(indicator, ind_type):
+def greynoise_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type != "ip":
         return None
 
-    cached = cache_get(indicator, "greynoise")
+    cached = cache_get(indicator, "greynoise", user_id)
     if cached:
         return cached
 
@@ -42,5 +42,5 @@ def greynoise_check(indicator, ind_type):
         "noise":          data.get("noise", False),
     }
 
-    cache_set(indicator, "greynoise", result)
+    cache_set(indicator, "greynoise", result, user_id)
     return result

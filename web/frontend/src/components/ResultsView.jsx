@@ -11,7 +11,7 @@ const SOURCE_ORDER = [
   'pivot',
 ]
 
-export default function ResultsView({ result, partial = {}, scanIndicator = '', onScan, onRescan, loading, error }) {
+export default function ResultsView({ result, partial = {}, scanIndicator = '', onRescan, onViewPivot, loading, error, onStop, onExportReport, onExportEvidenceCsv, onExportJson, onExportDocx, docxDisabled = false }) {
   const [query, setQuery] = useState(result?.indicator ?? scanIndicator)
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export default function ResultsView({ result, partial = {}, scanIndicator = '', 
           <input
             value={query}
             onChange={e => setQuery(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && submit(onScan)}
+            onKeyDown={e => e.key === 'Enter' && submit(onRescan)}
             type="text"
             placeholder="IP address, domain, URL, or hash…"
             className="w-full focus:outline-none transition-all"
@@ -50,19 +50,21 @@ export default function ResultsView({ result, partial = {}, scanIndicator = '', 
             onFocus={e => e.target.style.borderColor = '#4edea3'}
             onBlur={e  => e.target.style.borderColor = '#3c4a42'}
           />
+          
         </div>
-        <button
-          onClick={() => submit(onScan)}
-          disabled={loading || !query.trim()}
-          className="flex items-center gap-2 transition-all active:scale-95 disabled:opacity-40 whitespace-nowrap shrink-0"
-          style={{
-            background: '#4edea3', color: '#003824', border: 'none', borderRadius: 2,
-            padding: '9px 18px', fontSize: 12, fontWeight: 700,
-            fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.07em', cursor: 'pointer',
-          }}>
-          <span className="material-symbols-outlined" style={{ fontSize: 16 }}>radar</span>
-          {loading ? 'SCANNING…' : 'SCAN'}
-        </button>
+        {loading && (
+          <button
+            onClick={onStop}
+            className="flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap shrink-0"
+            style={{
+              background: '#ffb4ab', color: '#690005', border: 'none', borderRadius: 2,
+              padding: '9px 18px', fontSize: 12, fontWeight: 700,
+              fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.07em', cursor: 'pointer',
+            }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>stop</span>
+            STOP
+          </button>
+        )}
         <button
           onClick={() => submit(onRescan)}
           disabled={loading || !query.trim()}
@@ -79,7 +81,7 @@ export default function ResultsView({ result, partial = {}, scanIndicator = '', 
       {error && <p className="mb-3" style={{ fontSize: 12, color: '#ffb4ab' }}>{error}</p>}
 
       {/* Verdict card */}
-      {result && <div className="mb-5"><VerdictCard result={result} /></div>}
+      {result && <div className="mb-5"><VerdictCard result={result} onExportReport={onExportReport} onExportEvidenceCsv={onExportEvidenceCsv} onExportJson={onExportJson} onExportDocx={onExportDocx} docxDisabled={docxDisabled} /></div>}
 
       {/* Streaming indicator */}
       {loading && !result && (
@@ -114,7 +116,7 @@ export default function ResultsView({ result, partial = {}, scanIndicator = '', 
         {SOURCE_ORDER.map(key => {
           const data = result?.[key] ?? partial?.[key]
           if (!data) return null
-          const containers = getSourceContainers(key, data)
+          const containers = getSourceContainers(key, data, { onRescanPivot: onRescan, onViewPivot, scanIndicator })
           return containers.map((container, i) => (
             <div key={`${key}-${i}`} style={{ animation: 'fadeSlideIn 0.25s ease forwards' }}>
               {container}

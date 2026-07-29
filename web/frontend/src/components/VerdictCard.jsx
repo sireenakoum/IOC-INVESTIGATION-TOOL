@@ -1,13 +1,7 @@
 import { getStyle, VERDICT_LABEL } from '../utils/verdict'
-
-const RING_COLOR = {
-  high:        '#ffb4ab',
-  medium_risk: '#f97316',
-  low_risk:    '#eab308',
-  suspicious:  '#f59e0b',
-  clean:       '#4edea3',
-  no_data:     '#3c4a42',
-}
+import { guessIndicatorType } from '../utils/indicatorType'
+import { VERDICT_COLOR as RING_COLOR, VERDICT_COLOR_RGB } from '../utils/verdictColors'
+import ExportMenu from './ExportMenu'
 
 const ACTION_LABEL = {
   high:        'QUARANTINE IMMEDIATELY',
@@ -34,29 +28,37 @@ function ScoreRing({ score, verdict }) {
   )
 }
 
-export default function VerdictCard({ result, inline }) {
+export default function VerdictCard({ result, inline, onExportReport, onExportEvidenceCsv, onExportJson, onExportDocx, docxDisabled }) {
   const s         = getStyle(result.verdict)
   const ringColor = RING_COLOR[result.verdict] || '#3c4a42'
   const triggered = (result.triggered_by || []).join(', ')
   const isHigh    = result.verdict === 'high'
 
   return (
-    <div className="relative overflow-hidden rounded p-6 flex items-center justify-between gap-6"
+    <div className="relative rounded p-6 flex items-center justify-between gap-6"
          style={{ background: '#1f1f23', border: `1px solid ${ringColor}33` }}>
 
-      {/* Background glow for high risk */}
+      {/* Background glow for high risk (clipped to card's rounded corners without clipping the card itself) */}
       {isHigh && (
-        <div className="absolute inset-0 pointer-events-none"
-             style={{ background: 'radial-gradient(ellipse at left center, rgba(255,180,171,0.04) 0%, transparent 60%)' }} />
+        <div className="absolute inset-0 rounded overflow-hidden pointer-events-none">
+          <div className="absolute inset-0 pointer-events-none"
+               style={{ background: `radial-gradient(ellipse at left center, rgba(${VERDICT_COLOR_RGB.high},0.05) 0%, transparent 60%)` }} />
+        </div>
       )}
 
       <div className="relative z-10 flex items-center gap-6">
         <ScoreRing score={result.score} verdict={result.verdict} />
         <div>
-          <p className="uppercase mb-1"
-             style={{ fontSize: 10, color: '#bbcabf', letterSpacing: '0.08em', fontFamily: 'JetBrains Mono, monospace' }}>
-            Global Risk Index
-          </p>
+          <div className="flex items-center gap-2 mb-1">
+            <p className="uppercase"
+               style={{ fontSize: 10, color: '#bbcabf', letterSpacing: '0.08em', fontFamily: 'JetBrains Mono, monospace' }}>
+            </p>
+            <span className="uppercase rounded" style={{ fontSize: 10, padding: '2px 10px', color: '#bbcabf',
+                                                           border: '1px solid #3c4a42', letterSpacing: '0.08em',
+                                                           fontFamily: 'JetBrains Mono, monospace' }}>
+              {guessIndicatorType(result.indicator)}
+            </span>
+          </div>
           <div className="flex items-baseline gap-2">
             <span className="font-bold" style={{ fontSize: 28, color: ringColor, fontFamily: 'Geist, sans-serif' }}>
               {VERDICT_LABEL[result.verdict] || result.verdict}
@@ -84,7 +86,16 @@ export default function VerdictCard({ result, inline }) {
       </div>
 
       {/* Action button */}
-      <div className="relative z-10 shrink-0">
+      <div className="relative z-10 shrink-0 flex items-center gap-2">
+        <ExportMenu
+          indicator={result.indicator}
+          onExportReport={onExportReport}
+          onExportCsv={onExportEvidenceCsv}
+          onExportJson={onExportJson}
+          onExportDocx={onExportDocx}
+          docxDisabled={docxDisabled}
+          color={ringColor}
+        />
         <button
           className="px-5 py-2.5 uppercase tracking-widest transition-all active:scale-95"
           style={{

@@ -1,98 +1,17 @@
-import os
 import re
 import time
-import sqlite3
-import threading
 import requests
-from datetime import date
+import trafilatura
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
+from .enrichment import get_known_entities
 
 # Load environment variables
 load_dotenv()
 
-# Get API keys from environment variables
-SCALESERP_KEY = os.getenv("SCALESERP_KEY", "")
-SCALESERP_KEY2 = os.getenv("SCALESERP_KEY2", "")  # Fallback key
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "")
-
-# ── Rate limiter ─────────────────────────────────────────────────────────────
-# Protects paid API credits (ScaleSerp / SerpApi) from being exhausted.
-# Limits: max 5 ScaleSerp calls per scan, max 30 ScaleSerp calls per day.
-# When either limit is hit the search falls through to DDG (free) automatically.
-
-_RATE_LIMIT_DAILY  = int(os.getenv("SCALESERP_DAILY_LIMIT", "30"))
-_RATE_LIMIT_SCAN   = int(os.getenv("SCALESERP_SCAN_LIMIT",  "5"))
-
-_RL_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "scaleserp_usage.db"
-)
-_rl_lock = threading.Lock()
-
-
-def _rl_init():
-    """Create the usage table if it doesn't exist."""
-    with sqlite3.connect(_RL_DB_PATH) as con:
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS daily_usage (
-                day  TEXT PRIMARY KEY,
-                hits INTEGER NOT NULL DEFAULT 0
-            )
-        """)
-        con.commit()
-
-
-def _rl_daily_count() -> int:
-    """Return how many ScaleSerp calls have been made today."""
-    today = str(date.today())
-    try:
-        with sqlite3.connect(_RL_DB_PATH) as con:
-            row = con.execute(
-                "SELECT hits FROM daily_usage WHERE day = ?", (today,)
-            ).fetchone()
-        return row[0] if row else 0
-    except Exception:
-        return 0
-
-
-def _rl_increment():
-    """Increment today's ScaleSerp call counter by 1."""
-    today = str(date.today())
-    try:
-        with _rl_lock:
-            with sqlite3.connect(_RL_DB_PATH) as con:
-                con.execute("""
-                    INSERT INTO daily_usage (day, hits) VALUES (?, 1)
-                    ON CONFLICT(day) DO UPDATE SET hits = hits + 1
-                """, (today,))
-                con.commit()
-    except Exception:
-        pass
-
-
-def _rl_daily_exceeded() -> bool:
-    return _rl_daily_count() >= _RATE_LIMIT_DAILY
-
-
-def get_scaleserp_usage() -> dict:
-    """Public helper — returns today's usage stats (used by test/dashboard)."""
-    count = _rl_daily_count()
-    return {
-        "today":       count,
-        "daily_limit": _RATE_LIMIT_DAILY,
-        "scan_limit":  _RATE_LIMIT_SCAN,
-        "remaining":   max(0, _RATE_LIMIT_DAILY - count),
-        "exceeded":    count >= _RATE_LIMIT_DAILY,
-    }
-
-
-# Initialise DB on module load
-_rl_init()
-
-MALWARE_KEYWORDS = {
+MALWARE_KEYWORDS_SEED = {
     "mirai", "hajime", "mozi", "emotet", "qakbot", "cobalt strike", "metasploit",
     "asyncrat", "njrat", "redline", "agenttesla", "formbook", "lokibot", "raccoon",
     "vidar", "lumma", "xmrig", "pdfsider", "darkcomet", "netwire", "remcos",
@@ -101,7 +20,7 @@ MALWARE_KEYWORDS = {
     "ta505", "fin7", "unc2452",
 }
 
-APT_ACTORS = {
+APT_ACTORS_SEED = {
     "lazarus group", "apt28", "apt29", "apt30", "apt41", "apt10", "apt31",
     "sandworm", "fancy bear", "cozy bear", "wizard spider", "fin7", "fin8",
     "ta505", "ta551", "scattered spider", "volt typhoon", "salt typhoon",
@@ -127,16 +46,22 @@ _DOMAIN_RE = re.compile(r'\b(?:[a-zA-Z0-9-]+\.)+(?:com|net|org|io|ru|cn|xyz|top|
 _SHA256_RE = re.compile(r'\b[a-fA-F0-9]{64}\b')
 _MD5_RE    = re.compile(r'\b[a-fA-F0-9]{32}\b')
 
+# Used only in _extract_signals() to keep well-known infra/platform domains out of
+# co-mentioned IOC lists (e.g. a "github.com" link in an article isn't a pivot-worthy
+# co-domain). Not consulted for fetch filtering — see _SKIP_DOMAINS_DEFAULT for that.
 _BENIGN_DOMAINS = {
     "google.com", "microsoft.com", "github.com", "amazonaws.com", "cloudflare.com",
     "apple.com", "facebook.com", "twitter.com", "linkedin.com", "youtube.com",
     "wikipedia.org", "w3.org", "mozilla.org", "python.org",
 }
 
+# Used in _should_skip() to exclude domains from being fetched at all — search
+# engine chrome and reference/encyclopedic sites that never carry indicator-specific
+# threat intel, so they shouldn't burn a fetch or land in "Sources Fetched".
 _SKIP_DOMAINS_DEFAULT = [
     "google.com", "bing.com", "youtube.com", "twitter.com", "reddit.com",
     "linkedin.com", "facebook.com", "pastebin.com", "githubusercontent.com",
-    "serpapi.com", "scaleserp.com",
+    "wikipedia.org", "wiktionary.org", "britannica.com", "investopedia.com",
 ]
 
 _TIER1_DOMAINS = {
@@ -173,355 +98,152 @@ def _should_skip(url, skip_set):
 
 def _build_queries(indicator, ind_type):
     """
-    Build tiered Google dork queries for threat intel hunting.
-    Round 1: Tier-1 and Tier-2 targeted site dorks
-    Round 2: Broader IOC-focused dorks (no site restriction)
-    Round 3: Pure generic search (no filters)
+    Build plain-text search queries for threat intel hunting via DuckDuckGo.
+    DDG doesn't support Google-style site:/intext: dork operators, so every
+    query here is plain keyword text (trusted-source prioritization instead
+    happens post-fetch, see _get_url_tier). Round 1 always runs; round 2 is
+    a top-up that only runs if round 1 came up short.
     """
-    tier1_sites = (
-        "site:securelist.com OR site:unit42.paloaltonetworks.com OR "
-        "site:blog.talosintelligence.com OR site:research.checkpoint.com OR "
-        "site:thedfirreport.com OR site:mandiant.com OR site:crowdstrike.com OR "
-        "site:blogs.blackberry.com"
-    )
-
-    tier2_sites = (
-        "site:any.run OR site:tria.ge OR site:abuse.ch OR "
-        "site:malpedia.caad.fkie.fraunhofer.de OR site:otx.alienvault.com"
-    )
-
-    # Round 1 — trusted threat intel sites only
     round1 = [
-        f'"{indicator}" ({tier1_sites})',
-        f'"{indicator}" ({tier2_sites})',
-    ]
-
-    if ind_type == "ip":
-        round1 += [
-            f'"{indicator}" site:feodotracker.abuse.ch OR site:sslbl.abuse.ch OR site:threatfox.abuse.ch',
-        ]
-    elif ind_type == "hash":
-        round1 += [
-            f'"{indicator}" site:bazaar.abuse.ch OR site:hybrid-analysis.com',
-        ]
-
-    # Round 2 — broader IOC dorks, no site restriction
-    round2 = [
-        f'"{indicator}" intext:"indicators of compromise"',
-        f'"{indicator}" intext:"command and control" OR intext:"C2 server" OR intext:"botnet"',
-        f'"{indicator}" malware threat intelligence report',
-    ]
-
-    if ind_type == "ip":
-        round2 += [
-            f'"{indicator}" intext:"malicious IP" OR intext:"threat actor" OR intext:"attack infrastructure"',
-        ]
-    elif ind_type == "domain":
-        round2 += [
-            f'"{indicator}" intext:"phishing" OR intext:"malware distribution" OR intext:"dropper"',
-        ]
-    elif ind_type == "hash":
-        round2 += [
-            f'"{indicator}" intext:"malware sample" OR intext:"sandbox analysis"',
-        ]
-
-    # Round 3 — pure generic search, no filters at all
-    round3 = [
         f'"{indicator}"',
+        f'"{indicator}" malware threat intelligence report',
+        f'"{indicator}" indicators of compromise',
     ]
 
-    return round1, round2, round3
+    if ind_type == "ip":
+        round1.append(f'"{indicator}" malicious IP threat actor attack infrastructure')
+    elif ind_type == "domain":
+        round1.append(f'"{indicator}" phishing malware distribution dropper')
+    elif ind_type == "hash":
+        round1.append(f'"{indicator}" malware sample sandbox analysis')
+
+    round2 = [
+        f'"{indicator}" command and control botnet C2 server',
+        f'"{indicator}" securelist unit42 talos crowdstrike mandiant threat report',
+    ]
+
+    return round1, round2
 
 
-# ── Search backends ──────────────────────────────────────────────────────────
-
-def _search_scaleserp_single(query, api_key, key_name="ScaleSerp"):
-    """Query ScaleSerp — real Google results with full dork support."""
-    if not api_key:
-        print(f"  [{key_name}] No API key found")
-        return None, "no_api_key"
-
-    # Daily hard limit — fall through to DDG when exceeded
-    if _rl_daily_exceeded():
-        used = _rl_daily_count()
-        print(f"  [{key_name}] Daily limit reached ({used}/{_RATE_LIMIT_DAILY}) — skipping to DDG")
-        return None, "rate_limited"
-
-    try:
-        resp = requests.get(
-            "https://api.scaleserp.com/search",
-            params={
-                "api_key":       api_key,
-                "q":             query,
-                "num":           10,
-                "gl":            "us",
-                "hl":            "en",
-                "google_domain": "google.com",
-            },
-            timeout=15,
-        )
-    except requests.exceptions.Timeout:
-        print(f"  [{key_name}] Timeout — skipping query")
-        return None, "timeout"
-    except requests.exceptions.ConnectionError:
-        print(f"  [{key_name}] Connection error, check your network")
-        return None, "network_error"
-
-    if resp.status_code == 402:
-        print(f"  [{key_name}] Out of credits or account suspended")
-        return None, "out_of_credits"
-    if resp.status_code == 429:
-        print(f"  [{key_name}] Rate limit hit")
-        return None, "ratelimit"
-    if resp.status_code == 401:
-        print(f"  [{key_name}] Invalid API key")
-        return None, "auth_error"
-    if resp.status_code != 200:
-        print(f"  [{key_name}] Error {resp.status_code}: {resp.text[:100]}")
-        return None, f"http_{resp.status_code}"
-
-    results = resp.json().get("organic_results", [])
-    urls = [r["link"] for r in results if "link" in r]
-    _rl_increment()  # count this successful call against the daily budget
-    remaining = max(0, _RATE_LIMIT_DAILY - _rl_daily_count())
-    print(f"  [{key_name}] {len(urls)} results for: {query[:70]}  [{remaining} daily credits left]")
-    return urls, None
-
-
-def _search_serpapi_single(query, api_key):
-    """Query SerpApi — real Google results, fallback to ScaleSerp."""
-    if not api_key:
-        print("  [SerpApi] No API key found")
-        return None, "no_api_key"
-
-    try:
-        resp = requests.get(
-            "https://serpapi.com/search",
-            params={
-                "api_key": api_key,
-                "engine":  "google",
-                "q":       query,
-                "num":     10,
-                "hl":      "en",
-                "gl":      "us",
-            },
-            timeout=15,
-        )
-    except requests.exceptions.Timeout:
-        print(f"  [SerpApi] Timeout — skipping query")
-        return None, "timeout"
-    except requests.exceptions.ConnectionError:
-        print(f"  [SerpApi] Connection error, check your network")
-        return None, "network_error"
-
-    if resp.status_code == 429:
-        print("  [SerpApi] Rate limit / quota exceeded")
-        return None, "ratelimit"
-    if resp.status_code == 401:
-        print("  [SerpApi] Invalid API key")
-        return None, "auth_error"
-    if resp.status_code != 200:
-        print(f"  [SerpApi] Error {resp.status_code}: {resp.text[:100]}")
-        return None, f"http_{resp.status_code}"
-
-    organic = resp.json().get("organic_results", [])
-    urls = [r["link"] for r in organic if "link" in r]
-    print(f"  [SerpApi] {len(urls)} results for: {query[:70]}")
-    return urls, None
-
+# ── Search backend ───────────────────────────────────────────────────────────
 
 def _search_duckduckgo_single(query):
-    """DuckDuckGo fallback — free, no API key needed.
-    DDG does not support Google-style site: or intext: operators,
-    so we skip those queries and only run plain-text searches.
-    """
-    if "site:" in query or "intext:" in query:
-        return [], None  # skip silently, not an error
+    """DuckDuckGo — free, no API key needed.
 
+    ddgs fans out across several backend search engines and only raises once
+    every one of them has failed/returned nothing, so any exception here means
+    the whole search came up dry — not just one engine. RatelimitException/
+    TimeoutException are called out explicitly (rate-limiting or blocking is
+    the prime suspect for this ever firing); the generic branch still prints
+    str(e), since that's where ddgs' aggregated failure reason (e.g. which
+    engine failed and why) actually lives — swallowing it down to just the
+    exception class name was hiding the useful part.
+    """
     try:
         from ddgs import DDGS
+        from ddgs.exceptions import RatelimitException, TimeoutException
         with DDGS() as ddgs:
             results = [r["href"] for r in ddgs.text(query, max_results=10)]
         print(f"  [DDG] {len(results)} results for: {query[:70]}")
+        if not results:
+            print(f"  [DDG] Zero results (search completed, nothing matched) for: {query[:70]}")
         return results, None
     except ImportError:
         print("  [DDG] Not installed — run: pip install ddgs")
         return None, "not_installed"
+    except RatelimitException as e:
+        print(f"  [DDG] RATE LIMITED for query '{query[:70]}': {e}")
+        return None, "rate_limited"
+    except TimeoutException as e:
+        print(f"  [DDG] TIMED OUT for query '{query[:70]}': {e}")
+        return None, "timeout"
     except Exception as e:
-        print(f"  [DDG] Error: {e.__class__.__name__}")
+        print(f"  [DDG] Error for query '{query[:70]}': {e.__class__.__name__}: {e}")
         return None, "error"
-
-
-def _search_scraper_single(query):
-    """Last resort fallback — googlesearch-python scraper."""
-    try:
-        from googlesearch import search
-        results = []
-        for url in search(query, num_results=10, lang="en", sleep_interval=2):
-            results.append(url)
-            time.sleep(0.5)
-        return results
-    except ImportError:
-        print("  [Intel] googlesearch-python not installed")
-        return []
-    except Exception as e:
-        print(f"  [Intel] Scraper error ({e.__class__.__name__})")
-        return []
 
 
 # ── URL collection ───────────────────────────────────────────────────────────
 
 def _collect_urls(indicator, ind_type, gi_cfg):
-    # ── FIX: reset per-call so a previous 402 never poisons this request ──
-    scale_disabled  = False  # local flag, not a global latch
-    scale2_disabled = False
+    max_urls = gi_cfg.get("max_urls", 8)
+    skip_set = set(gi_cfg.get("skip_domains", _SKIP_DOMAINS_DEFAULT))
 
-    max_urls   = gi_cfg.get("max_urls", 8)
-    skip_set   = set(gi_cfg.get("skip_domains", _SKIP_DOMAINS_DEFAULT))
-    scan_limit = gi_cfg.get("scaleserp_scan_limit", _RATE_LIMIT_SCAN)
-
-    use_scale  = bool(SCALESERP_KEY)
-    use_scale2 = bool(SCALESERP_KEY2)
-    use_serp   = bool(SERPAPI_KEY)
-
-    round1, round2, round3 = _build_queries(indicator, ind_type)
+    round1, round2 = _build_queries(indicator, ind_type)
 
     urls           = []
     seen           = set()
-    used_scale     = False
-    used_scale2    = False
-    used_serp      = False
     used_ddg       = False
-    used_scraper   = False
-    scale_failed   = False
-    scale2_failed  = False
-    serp_failed    = False
     ddg_failed     = False
-    scale_scan_hits = 0  # per-scan ScaleSerp call counter
+    ddg_fail_reason = None
 
     def _add_url(url):
-        if len(urls) >= max_urls:
-            return
         if url in seen:
             return
+
         if _should_skip(url, skip_set):
             return
         seen.add(url)
         urls.append(url)
 
     def _run_query(query):
-        nonlocal used_scale, used_scale2, used_serp, used_ddg, used_scraper
-        nonlocal scale_failed, scale2_failed, serp_failed, ddg_failed
-        nonlocal scale_scan_hits
+        nonlocal used_ddg, ddg_failed, ddg_fail_reason
 
-        if len(urls) >= max_urls:
+        if ddg_failed:
             return
 
-        # 1. ScaleSerp — primary
-        if use_scale and not scale_failed:
-            # Per-scan hard cap
-            if scale_scan_hits >= scan_limit:
-                print(f"  [Intel] ScaleSerp scan limit ({scan_limit}) reached — using DDG for remaining queries")
-            else:
-                result, err = _search_scaleserp_single(query, SCALESERP_KEY, "ScaleSerp")
-                if err in ("out_of_credits", "auth_error", "no_api_key", "ratelimit", "rate_limited"):
-                    scale_failed = True
-                    print(f"  [Intel] ScaleSerp failed ({err}) — trying fallback key")
-                elif err == "timeout":
-                    pass
-                elif result is not None:
-                    scale_scan_hits += 1
-                    used_scale = True
-                    for u in result:
-                        _add_url(u)
-                    return
-
-        # 2. ScaleSerp Key2 — fallback key
-        if use_scale2 and not scale2_failed and SCALESERP_KEY2 != SCALESERP_KEY:
-            if scale_scan_hits >= scan_limit:
-                print(f"  [Intel] ScaleSerp2 scan limit ({scan_limit}) reached — using DDG")
-            else:
-                result, err = _search_scaleserp_single(query, SCALESERP_KEY2, "ScaleSerp2")
-                if err in ("out_of_credits", "auth_error", "no_api_key", "ratelimit", "rate_limited"):
-                    scale2_failed = True
-                    print(f"  [Intel] ScaleSerp2 failed ({err}) — switching to SerpApi")
-                elif err == "timeout":
-                    pass
-                elif result is not None:
-                    scale_scan_hits += 1
-                    used_scale2 = True
-                    for u in result:
-                        _add_url(u)
-                    return
-
-        # 3. SerpApi
-        if use_serp and not serp_failed:
-            result, err = _search_serpapi_single(query, SERPAPI_KEY)
-            if err in ("auth_error", "no_api_key", "ratelimit"):
-                serp_failed = True
-                print(f"  [Intel] SerpApi failed ({err}) — switching to DDG")
-            elif err == "timeout":
-                pass
-            elif result is not None:
-                used_serp = True
-                for u in result:
-                    _add_url(u)
-                return
-
-        # 4. DuckDuckGo — free fallback
-        if not ddg_failed:
-            result, err = _search_duckduckgo_single(query)
-            if err in ("not_installed", "error"):
-                ddg_failed = True
-                print("  [Intel] DDG failed — falling back to scraper")
-            elif result:
-                used_ddg = True
-                for u in result:
-                    _add_url(u)
-                return
-
-        # 5. Scraper — last resort
-        time.sleep(2)
-        result = _search_scraper_single(query)
-        if result:
-            used_scraper = True
+        result, err = _search_duckduckgo_single(query)
+        if err in ("not_installed", "error", "rate_limited", "timeout"):
+            ddg_failed = True
+            ddg_fail_reason = err
+            print(f"  [Intel] DDG failed ({err}) — aborting remaining queries for indicator {indicator!r}")
+        elif result:
+            used_ddg = True
             for u in result:
                 _add_url(u)
 
-    # Run round 1 — trusted sites
+    # Run round 1 — plain-text search
     for q in round1:
         _run_query(q)
-        if len(urls) >= max_urls:
-            break
 
-    # Run round 2 — broader IOC dorks if not enough results
-    if len(urls) < 3:
+    # Run round 2 — broader plain-text search, top-up only if still not enough
+    if len(urls) < 2:
         for q in round2:
             _run_query(q)
-            if len(urls) >= max_urls:
-                break
 
-    # Run round 3 — pure generic search if still not enough
-    if len(urls) < 2:
-        for q in round3:
-            _run_query(q)
-            if len(urls) >= max_urls:
-                break
+    # Prioritize trusted sources when trimming to the configured max, rather
+    # than whichever query happened to fill the quota first.
+    urls.sort(key=lambda u: _get_url_tier(u, gi_cfg))
+    urls = urls[:max_urls]
 
-    methods = []
-    if used_scale:   methods.append("ScaleSerp")
-    if used_scale2:  methods.append("ScaleSerp2")
-    if used_serp:    methods.append("SerpApi")
-    if used_ddg:     methods.append("DDG")
-    if used_scraper: methods.append("scraper")
-    method = "+".join(methods) if methods else "none"
-
-    return urls, method
+    method = "DDG" if used_ddg else "none"
+    return urls, method, ddg_fail_reason
 
 
 # ── Page fetching ────────────────────────────────────────────────────────────
 
+def _extract_main_content(html, url=None):
+    """Strip nav/sidebar/ads/related-content, keep just the article body.
+    Falls back to the raw HTML if extraction fails or returns something
+    too small to be real content — some sources (feeds, minimal pages)
+    aren't structured as articles at all, and losing all signal from
+    those would be worse than the noise this is meant to fix."""
+    try:
+        extracted = trafilatura.extract(
+            html, url=url, include_comments=False, include_tables=True
+        )
+        if extracted and len(extracted.strip()) > 50:
+            return extracted
+    except Exception:
+        pass
+    print(f"  [Intel] Content extraction fell back to raw HTML for {url}")
+    return html
+
+
 def _fetch_page(url):
+    """Returns (text, error). error is None on success, otherwise a short
+    reason tag ("blocked", "http_error", "timeout", "error") so callers can
+    tell a fetch failure apart from a page that simply loaded but didn't
+    mention the indicator."""
     try:
         resp = requests.get(
             url,
@@ -529,10 +251,21 @@ def _fetch_page(url):
             timeout=10,
         )
         if resp.status_code != 200:
-            return None
-        return resp.text
-    except Exception:
-        return None
+            if resp.status_code in (403, 429):
+                print(f"  [Intel] Fetch BLOCKED/rate-limited for {url} — HTTP {resp.status_code}")
+                return None, "blocked"
+            print(f"  [Intel] Fetch failed for {url} — HTTP {resp.status_code}")
+            return None, "http_error"
+        return _extract_main_content(resp.text, url=url), None
+    except requests.exceptions.Timeout:
+        print(f"  [Intel] Fetch timed out for {url}")
+        return None, "timeout"
+    except requests.exceptions.RequestException as e:
+        print(f"  [Intel] Fetch error for {url}: {e.__class__.__name__}: {e}")
+        return None, "error"
+    except Exception as e:
+        print(f"  [Intel] Unexpected fetch error for {url}: {e.__class__.__name__}: {e}")
+        return None, "error"
 
 
 def _is_private_ip(ip):
@@ -552,6 +285,48 @@ def _is_private_ip(ip):
             a == 127)
 
 
+# ── Enriched entity sets ─────────────────────────────────────────────────────
+# Seed keyword sets stay hardcoded as a permanent baseline (always active, even
+# on a fresh DB). They're unioned with entities learned live from OTX/ThreatFox
+# and bulk-imported from MITRE ATT&CK (see sources/enrichment.py). The union is
+# cached briefly since this runs once per fetched page per scan.
+
+_entity_cache = {"malware": set(), "apt_actor": set(), "loaded_at": 0,
+                 "malware_pattern": None, "apt_actor_pattern": None}
+_ENTITY_CACHE_TTL = 300  # 5 minutes — avoids a DB query on every fetched page
+
+
+def _build_pattern(terms):
+    """One compiled alternation pattern for a whole term set, with word
+    boundaries — much faster than looping and searching per-keyword
+    when the set has thousands of entries. Longer terms sorted first
+    so multi-word phrases (e.g. 'cobalt strike') match before any
+    shorter substring overlap could occur."""
+    if not terms:
+        return None
+    escaped = sorted((re.escape(t) for t in terms), key=len, reverse=True)
+    return re.compile(r'\b(?:' + '|'.join(escaped) + r')\b', re.IGNORECASE)
+
+
+def _get_enriched_set(entity_type, seed_set):
+    now = time.time()
+    if now - _entity_cache["loaded_at"] > _ENTITY_CACHE_TTL:
+        _entity_cache["malware"] = get_known_entities("malware")
+        _entity_cache["apt_actor"] = get_known_entities("apt_actor")
+        merged_malware = MALWARE_KEYWORDS_SEED | _entity_cache["malware"]
+        merged_apt = APT_ACTORS_SEED | _entity_cache["apt_actor"]
+        _entity_cache["malware_pattern"] = _build_pattern(merged_malware)
+        _entity_cache["apt_actor_pattern"] = _build_pattern(merged_apt)
+        _entity_cache["loaded_at"] = now
+    return seed_set | _entity_cache[entity_type]
+
+
+def _get_enriched_pattern(entity_type, seed_set):
+    _get_enriched_set(entity_type, seed_set)  # ensures cache is fresh
+    key = "malware_pattern" if entity_type == "malware" else "apt_actor_pattern"
+    return _entity_cache[key]
+
+
 # ── Signal extraction ────────────────────────────────────────────────────────
 
 def _extract_signals(text, indicator, ind_type=None):
@@ -559,14 +334,18 @@ def _extract_signals(text, indicator, ind_type=None):
     ind_lower = indicator.lower()
 
     malware = set()
-    for kw in MALWARE_KEYWORDS:
-        if kw in lower:
-            malware.add(kw.title() if " " not in kw else kw)
+    malware_pattern = _get_enriched_pattern("malware", MALWARE_KEYWORDS_SEED)
+    if malware_pattern:
+        for match in malware_pattern.finditer(text):
+            matched_text = match.group(0)
+            malware.add(matched_text.title() if " " not in matched_text else matched_text)
 
     apt_actors = set()
-    for actor in APT_ACTORS:
-        if actor in lower:
-            apt_actors.add(actor.title() if " " in actor else actor.upper())
+    apt_pattern = _get_enriched_pattern("apt_actor", APT_ACTORS_SEED)
+    if apt_pattern:
+        for match in apt_pattern.finditer(text):
+            matched_text = match.group(0)
+            apt_actors.add(matched_text.title() if " " in matched_text else matched_text.upper())
 
     attck = set(_ATTCK_RE.findall(text))
     cves  = set(_CVE_RE.findall(text))
@@ -619,8 +398,8 @@ def _get_url_tier(url, gi_cfg):
 
 # ── Main entry point ─────────────────────────────────────────────────────────
 
-def query_google_intel(indicator, ind_type, api_key=None, config=None):
-    cached = cache_get(indicator, "google_intel")
+def query_google_intel(indicator, ind_type, api_key=None, config=None, user_id=LOCAL_USER_ID):
+    cached = cache_get(indicator, "google_intel", user_id)
     if cached is not None:
         return cached
 
@@ -629,15 +408,24 @@ def query_google_intel(indicator, ind_type, api_key=None, config=None):
     if not enabled:
         return None
 
-    urls, search_method = _collect_urls(indicator, ind_type, gi_cfg)
+    urls, search_method, ddg_fail_reason = _collect_urls(indicator, ind_type, gi_cfg)
 
     if not urls:
-        print("  [Intel] All search methods failed — skipping")
+        if ddg_fail_reason:
+            print(f"  [Intel] Search failed ({ddg_fail_reason}) for indicator {indicator!r} — "
+                  f"returning empty result, NOT a genuine no-results")
+            search_status, search_error = "blocked", ddg_fail_reason
+        else:
+            print(f"  [Intel] Search completed with zero URLs for indicator {indicator!r} — genuine no-results")
+            search_status, search_error = "no_results", None
+        _empty_ev = {"malware": {}, "apt_actors": {}, "attck": {}, "cves": {}, "severity": {}, "co_iocs": {}}
         return {
             "score": 0, "verdict": "clean", "breakdown": [],
             "urls_fetched": [], "malware_families": [], "attack_ids": [],
             "co_iocs": {"ips": [], "domains": [], "hashes": []},
             "source_tiers": {}, "search_method": search_method,
+            "search_status": search_status, "search_error": search_error,
+            "evidence_sources": _empty_ev,
         }
 
     all_malware      = set()
@@ -652,13 +440,32 @@ def query_google_intel(indicator, ind_type, api_key=None, config=None):
     seen_doms        = set()
     seen_hashes      = set()
     source_tiers     = {}
+    malware_sources  = {}
+    apt_sources      = {}
+    attck_sources    = {}
+    cve_sources      = {}
+    severity_sources = {}
+    co_ioc_sources   = {}
 
+    fetch_failures = 0
     for url in urls:
-        source_tiers[url] = _get_url_tier(url, gi_cfg)
-        text = _fetch_page(url)
+        text, _fetch_err = _fetch_page(url)
         if not text:
+            fetch_failures += 1
             continue
+        # Plain substring check — won't catch defanged mentions (e.g. "46[.]60[.]55[.]125"),
+        # a known limitation. Trade-off accepted: avoids counting irrelevant pages as
+        # sources at the cost of occasionally missing a legitimately defanged mention.
+        if indicator.lower() not in text.lower():
+            print(f"  [Intel] Skipping {url} — indicator not found in fetched content")
+            continue
+        source_tiers[url] = _get_url_tier(url, gi_cfg)
         m, apt, a, cves, sev, ips, doms, hashes = _extract_signals(text, indicator, ind_type)
+        for item in m:    malware_sources.setdefault(item, []).append(url)
+        for item in apt:  apt_sources.setdefault(item, []).append(url)
+        for item in a:    attck_sources.setdefault(item, []).append(url)
+        for item in cves: cve_sources.setdefault(item, []).append(url)
+        for kw in sev:    severity_sources.setdefault(kw, []).append(url)
         all_malware.update(m)
         all_apt_actors.update(apt)
         all_attck.update(a)
@@ -667,14 +474,23 @@ def query_google_intel(indicator, ind_type, api_key=None, config=None):
             if kw not in all_severity:
                 all_severity[kw] = w
         for ip in ips:
+            co_ioc_sources.setdefault(ip, []).append(url)
             if ip not in seen_ips and len(all_co_ips) < 10:
                 seen_ips.add(ip); all_co_ips.append(ip)
         for d in doms:
+            co_ioc_sources.setdefault(d.lower(), []).append(url)
             if d.lower() not in seen_doms and len(all_co_doms) < 10:
                 seen_doms.add(d.lower()); all_co_doms.append(d)
         for h in hashes:
+            co_ioc_sources.setdefault(h.lower(), []).append(url)
             if h.lower() not in seen_hashes and len(all_co_hashes) < 10:
                 seen_hashes.add(h.lower()); all_co_hashes.append(h)
+
+    if urls and fetch_failures == len(urls):
+        print(f"  [Intel] ALL {len(urls)} page fetches failed for indicator {indicator!r} — "
+              f"likely blocked/rate-limited, NOT a genuine no-results")
+    elif fetch_failures:
+        print(f"  [Intel] {fetch_failures}/{len(urls)} page fetches failed for indicator {indicator!r}")
 
     malware_families = sorted(all_malware)
     apt_actors       = sorted(all_apt_actors)
@@ -726,8 +542,22 @@ def query_google_intel(indicator, ind_type, api_key=None, config=None):
     )
     verdict = _gi_verdict(score)
 
+    # search_status reflects pipeline health, not how much intel was found —
+    # "no_results" means the search/fetch pipeline ran cleanly and genuinely
+    # found nothing; "blocked" means fetches failed hard enough that an empty
+    # result can't be trusted as a real negative.
+    all_fetches_failed = bool(urls) and fetch_failures == len(urls)
+    if all_fetches_failed:
+        search_status, search_error = "blocked", "all_fetches_failed"
+    elif has_signals:
+        search_status, search_error = "success", None
+    else:
+        search_status, search_error = "no_results", None
+
     breakdown = []
     breakdown.append(f"Sources fetched: {len(urls)} ({tier1_count} tier-1, {tier2_count} tier-2)")
+    if fetch_failures:
+        breakdown.append(f"Fetch failures: {fetch_failures}/{len(urls)}")
 
     if malware_families:
         breakdown.append(f"Malware families: {', '.join(malware_families)} → +{malware_score}")
@@ -767,16 +597,13 @@ def query_google_intel(indicator, ind_type, api_key=None, config=None):
     else:
         breakdown.append("Co-mentioned IOCs: none → sent to pivot scan")
 
-    if "ScaleSerp" in search_method:
-        breakdown.append("Search method: ScaleSerp (Google dorks)")
-    elif "SerpApi" in search_method:
-        breakdown.append("Search method: SerpApi (Google dorks)")
-    elif "DDG" in search_method:
-        breakdown.append("Search method: DuckDuckGo (free fallback)")
-    elif "scraper" in search_method:
-        breakdown.append("Search method: Google scraper fallback")
+    if search_method == "DDG":
+        breakdown.append("Search method: DuckDuckGo")
     else:
         breakdown.append("Search method: none")
+
+    if search_status == "blocked":
+        breakdown.append(f"Search status: BLOCKED ({search_error}) — result may not reflect a real no-match")
 
     result = {
         "score":            score,
@@ -791,9 +618,19 @@ def query_google_intel(indicator, ind_type, api_key=None, config=None):
         "co_iocs":          co_iocs,
         "source_tiers":     source_tiers,
         "search_method":    search_method,
+        "search_status":    search_status,
+        "search_error":     search_error,
+        "evidence_sources": {
+            "malware":    malware_sources,
+            "apt_actors": apt_sources,
+            "attck":      attck_sources,
+            "cves":       cve_sources,
+            "severity":   severity_sources,
+            "co_iocs":    co_ioc_sources,
+        },
     }
 
-    cache_set(indicator, "google_intel", result)
+    cache_set(indicator, "google_intel", result, user_id)
     return result
 
 

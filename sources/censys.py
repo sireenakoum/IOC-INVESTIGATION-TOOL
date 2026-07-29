@@ -1,6 +1,6 @@
 import os
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,14 +10,14 @@ CENSYS_API_KEY = os.getenv("CENSYS_API_KEY")
 BASE_URL = "https://api.platform.censys.io/v3/global/asset/host"
 
 
-def censys_check(indicator, ind_type):
+def censys_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type != "ip":
         return None
 
     if not CENSYS_API_KEY:
         return None
 
-    cached = cache_get(indicator, "censys")
+    cached = cache_get(indicator, "censys", user_id)
     if cached:
         return cached
 
@@ -153,5 +153,5 @@ def censys_check(indicator, ind_type):
         "os":                       os_product,
     }
 
-    cache_set(indicator, "censys", result)
+    cache_set(indicator, "censys", result, user_id)
     return result

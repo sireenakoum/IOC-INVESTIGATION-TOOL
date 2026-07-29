@@ -2,7 +2,7 @@ function dotColor(line) {
   const t = line.trim()
   if (t.includes('→ +') && !t.includes('→ +0')) return '#4edea3'
   if (t.includes('→ -'))  return '#ffb4ab'
-  if (t.startsWith('——')) return null  // section header
+  if (t.startsWith('──')) return null  // section header
   return '#86948a'
 }
 
@@ -12,11 +12,11 @@ function parseScore(line) {
 }
 
 function isHeader(line) {
-  return line.trim().startsWith('——')
+  return line.trim().startsWith('──')
 }
 
 function headerLabel(line) {
-  return line.trim().replace(/^——\s*/, '').replace(/\s*——$/, '').trim()
+  return line.trim().replace(/^──\s*/, '').replace(/\s*──$/, '').trim()
 }
 
 export default function BreakdownPanel({ breakdown }) {

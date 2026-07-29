@@ -43,6 +43,33 @@ const Tag = ({ children, color = '#4cd7f6' }) => (
   }}>{children}</span>
 )
 
+const LinkedTag = ({ children, color = '#4cd7f6', sources = [] }) => {
+  if (!sources || sources.length === 0) return <Tag color={color}>{children}</Tag>
+  const [firstUrl, ...rest] = sources
+  const title = rest.length > 0
+    ? `${firstUrl}\n\nAlso on:\n${rest.join('\n')}`
+    : firstUrl
+  return (
+    <a href={firstUrl} target="_blank" rel="noopener noreferrer"
+      title={title}
+      style={{ textDecoration: 'none', display: 'inline-block', margin: '2px 3px 2px 0' }}>
+      <span style={{
+        background: color + '22', color,
+        fontSize: 11, padding: '2px 8px', borderRadius: 2,
+        fontFamily: 'JetBrains Mono, monospace',
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        textDecoration: 'underline', textDecorationStyle: 'dotted',
+        textDecorationColor: color + '99',
+      }}>
+        {children}
+        {rest.length > 0 && (
+          <sup style={{ fontSize: 8, opacity: 0.7 }}>×{sources.length}</sup>
+        )}
+      </span>
+    </a>
+  )
+}
+
 const Table = ({ headers, rows }) => (
   <table style={{ width: '100%', fontSize: 11, borderCollapse: 'collapse' }}>
     <thead>
@@ -73,7 +100,7 @@ const Table = ({ headers, rows }) => (
   </table>
 )
 
-export function getSourceContainers(key, data) {
+export function getSourceContainers(key, data, callbacks = {}) {
   if (!data) return []
   const containers = []
 
@@ -627,15 +654,23 @@ export function getSourceContainers(key, data) {
     const severityHits = data.severity_hits||[]
     const co           = data.co_iocs||{}
 
+    const evidSrc    = data.evidence_sources || {}
+    const malwareSrc = evidSrc.malware    || {}
+    const aptSrc     = evidSrc.apt_actors || {}
+    const attckSrc   = evidSrc.attck      || {}
+    const cveSrc     = evidSrc.cves       || {}
+    const sevSrc     = evidSrc.severity   || {}
+    const coIocSrc   = evidSrc.co_iocs   || {}
+
     if (families.length > 0 || attacks.length > 0 || aptActors.length > 0 || cveIds.length > 0 || severityHits.length > 0) {
       containers.push(
         <div style={CARD}>
-          <SectionTitle source="Google Threat Intel" aspect="Malware & ATT&CK" />
+          <SectionTitle source="Google Intel" aspect="Malware & ATT&CK" />
           {families.length > 0 && (
             <div style={{ marginBottom:10 }}>
               <Label>Malware Families</Label>
               <div style={{ marginTop:4 }}>
-                {families.map((f,i) => <Tag key={i} color="#ffb4ab">{f}</Tag>)}
+                {families.map((f,i) => <LinkedTag key={i} color="#ffb4ab" sources={malwareSrc[f]||[]}>{f}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -643,7 +678,7 @@ export function getSourceContainers(key, data) {
             <div style={{ marginBottom:10 }}>
               <Label>APT Actors</Label>
               <div style={{ marginTop:4 }}>
-                {aptActors.map((a,i) => <Tag key={i} color="#ef4444">{a}</Tag>)}
+                {aptActors.map((a,i) => <LinkedTag key={i} color="#ef4444" sources={aptSrc[a]||[]}>{a}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -651,7 +686,7 @@ export function getSourceContainers(key, data) {
             <div style={{ marginBottom:10 }}>
               <Label>ATT&amp;CK Techniques</Label>
               <div style={{ marginTop:4 }}>
-                {attacks.map((a,i) => <Tag key={i} color="#c084fc">{a}</Tag>)}
+                {attacks.map((a,i) => <LinkedTag key={i} color="#c084fc" sources={attckSrc[a]||[]}>{a}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -659,7 +694,7 @@ export function getSourceContainers(key, data) {
             <div style={{ marginBottom:10 }}>
               <Label>CVEs Mentioned</Label>
               <div style={{ marginTop:4 }}>
-                {cveIds.map((c,i) => <Tag key={i} color="#f97316">{c}</Tag>)}
+                {cveIds.map((c,i) => <LinkedTag key={i} color="#f97316" sources={cveSrc[c]||[]}>{c}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -667,7 +702,7 @@ export function getSourceContainers(key, data) {
             <div>
               <Label>Severity Signals</Label>
               <div style={{ marginTop:4 }}>
-                {severityHits.map((s,i) => <Tag key={i} color="#eab308">{s}</Tag>)}
+                {severityHits.map((s,i) => <LinkedTag key={i} color="#eab308" sources={sevSrc[s]||[]}>{s}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -678,12 +713,12 @@ export function getSourceContainers(key, data) {
     if (co.ips?.length || co.domains?.length || co.hashes?.length) {
       containers.push(
         <div style={CARD}>
-          <SectionTitle source="Google Threat Intel" aspect="Co-mentioned IOCs" />
+          <SectionTitle source="Google Intel" aspect="Co-mentioned IOCs" />
           {co.ips?.length > 0 && (
             <div style={{ marginBottom:8 }}>
               <Label>IPs</Label>
               <div style={{ marginTop:4 }}>
-                {co.ips.map((ip,i) => <Tag key={i} color="#4cd7f6">{ip}</Tag>)}
+                {co.ips.map((ip,i) => <LinkedTag key={i} color="#4cd7f6" sources={coIocSrc[ip]||[]}>{ip}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -691,7 +726,7 @@ export function getSourceContainers(key, data) {
             <div style={{ marginBottom:8 }}>
               <Label>Domains</Label>
               <div style={{ marginTop:4 }}>
-                {co.domains.map((d,i) => <Tag key={i} color="#86948a">{d}</Tag>)}
+                {co.domains.map((d,i) => <LinkedTag key={i} color="#86948a" sources={coIocSrc[d.toLowerCase()]||[]}>{d}</LinkedTag>)}
               </div>
             </div>
           )}
@@ -700,7 +735,7 @@ export function getSourceContainers(key, data) {
               <Label>Hashes</Label>
               <div style={{ marginTop:4 }}>
                 {co.hashes.map((h,i) =>
-                  <Tag key={i} color="#86948a">{h.slice(0,16)}…</Tag>)}
+                  <LinkedTag key={i} color="#86948a" sources={coIocSrc[h.toLowerCase()]||[]}>{h.slice(0,16)}…</LinkedTag>)}
               </div>
             </div>
           )}
@@ -711,7 +746,7 @@ export function getSourceContainers(key, data) {
     if (data.urls_fetched?.length > 0) {
       containers.push(
         <div style={CARD}>
-          <SectionTitle source="Google Threat Intel" aspect={`Sources Fetched (${data.urls_fetched.length})`} />
+          <SectionTitle source="Google Intel" aspect={`Sources Fetched (${data.urls_fetched.length})`} />
           {data.urls_fetched.map((url,i) => {
             const tier = data.source_tiers?.[url]
             return (
@@ -738,11 +773,13 @@ export function getSourceContainers(key, data) {
 
   // ── PIVOT SCAN ──────────────────────────────────────────
   if (key === 'pivot') {
-    const verdicts   = data.pivot_verdicts || {}
-    const scores     = data.pivot_scores   || {}
-    const sourcesMap = data.sources_map    || {}
-    const breakdown  = data.breakdown      || []
-    const pivotIocs  = data.pivot_iocs     || []
+    const verdicts     = data.pivot_verdicts     || {}
+    const scores       = data.pivot_scores       || {}
+    const sourcesMap   = data.sources_map        || {}
+    const breakdown    = data.breakdown          || []
+    const pivotIocs    = data.pivot_iocs         || []
+    const fromHistory  = data.pivot_from_full_scan || {}
+    const onRescanPivot = callbacks.onRescanPivot
 
     containers.push(
       <div style={CARD}>
@@ -769,7 +806,7 @@ export function getSourceContainers(key, data) {
             borderCollapse: 'collapse', marginTop: 12 }}>
             <thead>
               <tr style={{ borderBottom: '1px solid #3c4a42' }}>
-                {['IOC', 'Verdict', 'Score', 'Found by'].map(h => (
+                {['IOC', 'Verdict', 'Score', 'Found by', 'Status', ''].map(h => (
                   <th key={h} style={{ textAlign: 'left', padding: '4px 8px 6px 0',
                     color: '#86948a', fontWeight: 500,
                     fontFamily: 'Geist, sans-serif' }}>{h}</th>
@@ -785,6 +822,7 @@ export function getSourceContainers(key, data) {
                   suspicious:  '#f59e0b',
                   clean:       '#4edea3',
                 }[verdict] || '#86948a'
+                const historyTimestamp = fromHistory[ioc]
                 return (
                   <tr key={i} style={{ borderBottom: '1px solid #292a2d' }}>
                     <td style={{ padding: '5px 8px 5px 0', color: '#e3e2e6',
@@ -801,11 +839,66 @@ export function getSourceContainers(key, data) {
                     <td style={{ padding: '5px 0', color: '#86948a', fontSize: 11 }}>
                       {(sourcesMap[ioc] || []).join(', ')}
                     </td>
+                    <td style={{ padding: '5px 8px 5px 0' }}>
+                      {historyTimestamp ? (
+                        <span title={`Reused from a full scan completed ${historyTimestamp} — not a fresh pivot scan.`}
+                          style={{
+                            background: '#4cd7f622', color: '#4cd7f6',
+                            fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                            borderRadius: 2, fontFamily: 'JetBrains Mono, monospace',
+                            whiteSpace: 'nowrap', display: 'inline-block',
+                          }}>
+                          FROM HISTORY · {historyTimestamp.slice(0, 10)}
+                        </span>
+                      ) : (
+                        <span style={{
+                          background: '#4edea322', color: '#4edea3',
+                          fontSize: 10, fontWeight: 700, padding: '2px 7px',
+                          borderRadius: 2, fontFamily: 'JetBrains Mono, monospace',
+                          whiteSpace: 'nowrap', display: 'inline-block',
+                        }}>
+                          PIVOT SCAN
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '5px 0 5px 8px' }}>
+                      {historyTimestamp && onRescanPivot && (
+                        <button
+                          onClick={() => onRescanPivot(ioc)}
+                          title="Run a fresh full scan on this IOC now"
+                          className="transition-all active:scale-95"
+                          style={{
+                            background: 'transparent', border: '1px solid #3c4a42',
+                            borderRadius: 2, color: '#bbcabf', cursor: 'pointer',
+                            padding: '3px 8px', fontSize: 10, fontWeight: 600,
+                            fontFamily: 'JetBrains Mono, monospace', whiteSpace: 'nowrap',
+                          }}>
+                          RESCAN
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
+        )}
+
+        {callbacks.onViewPivot && (
+          <div style={{ marginTop: 14, textAlign: 'right' }}>
+            <button
+              onClick={() => callbacks.onViewPivot(callbacks.scanIndicator || '')}
+              title="Open the full pivot map for this indicator"
+              className="transition-all active:scale-95"
+              style={{
+                background: 'transparent', border: '1px solid #3c4a42',
+                borderRadius: 2, color: '#4cd7f6', cursor: 'pointer',
+                padding: '6px 14px', fontSize: 11, fontWeight: 700,
+                fontFamily: 'JetBrains Mono, monospace', letterSpacing: '0.05em',
+              }}>
+              VIEW PIVOT MAP →
+            </button>
+          </div>
         )}
       </div>
     )

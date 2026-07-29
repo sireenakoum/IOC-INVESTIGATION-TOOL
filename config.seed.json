@@ -215,15 +215,9 @@
     "K7": ["K7", "K7AntiVirus"]
   },
 
-  "apt_actors": [
-    "Lazarus", "APT28", "APT29", "APT30", "APT41",
-    "FIN7", "FIN8", "Sandworm", "Cozy Bear", "Fancy Bear",
-    "Winnti", "Turla", "Kimsuky", "Scattered Spider",
-    "BlackCat", "LockBit",
-    "Volt Typhoon", "Salt Typhoon", "UNC2452", "UNC3944",
-    "MuddyWater", "Mustang Panda", "APT10", "APT31",
-    "TA505", "TA551", "DarkSide", "Black Basta",
-    "Akira", "Cl0p", "Medusa"
+  "noise_tags": [
+    "honeypot", "tpot", "sensor-tagged", "scanner", "portscan", "scanners",
+    "cowrie", "suricata", "dionaea", "kippo", "glastopf", "conpot", "mailoney"
   ],
 
   "suspicious_ports": {
@@ -372,9 +366,8 @@
 "google_intel": {
     "enabled": true,
     "cache_ttl_hours": 12,
-    "max_urls": 8,
+    "max_urls": 10,
     "cap": 10,
-    "SERPAPI_KEY": "",
     "scoring": {
         "malware_one":       2,
         "malware_two_three": 3,
@@ -404,7 +397,8 @@
     "skip_domains": [
         "google.com", "bing.com", "youtube.com", "twitter.com",
         "reddit.com", "linkedin.com", "facebook.com",
-        "pastebin.com", "githubusercontent.com", "serpapi.com"
+        "pastebin.com", "githubusercontent.com",
+        "wikipedia.org", "wiktionary.org", "britannica.com", "investopedia.com"
     ]
 },
 

@@ -1,6 +1,6 @@
 import os
 import requests
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,14 +8,14 @@ load_dotenv()
 HYBRID_API_KEY = os.getenv("HYBRID_API_KEY")
 
 
-def hybrid_check(indicator, ind_type):
+def hybrid_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type not in ("hash", "ip", "domain"):
         return None
 
     if not HYBRID_API_KEY:
         return None
 
-    cached = cache_get(indicator, "hybrid")
+    cached = cache_get(indicator, "hybrid", user_id)
     if cached:
         return cached
 
@@ -60,12 +60,23 @@ def hybrid_check(indicator, ind_type):
     if not reports:
         return None
 
-    report = max(reports, key=lambda r: r.get("threat_score") or 0)
+    # Prefer a report with a real verdict, then a completed sandbox run —
+    # the list-level entries from /search/hash don't carry a threat_score
+    # (that only shows up in the /report/{id}/summary detail call below),
+    # so ranking by threat_score here always picks arbitrarily.
+    _verdict_rank = {"malicious": 2, "suspicious": 1}
+    report = max(
+        reports,
+        key=lambda r: (_verdict_rank.get(r.get("verdict"), 0), r.get("state") == "SUCCESS"),
+    )
     report_id    = report.get("id")
-    threat_score = report.get("threat_score")
+    threat_score = None
     family       = []
+    first_seen   = None
+    size         = None
+    av_detect    = None
 
-    if report_id and (report.get("threat_score") or 0) >= 50:
+    if report_id and report.get("verdict") in ("malicious", "suspicious"):
         detail_url  = f"https://www.hybrid-analysis.com/api/v2/report/{report_id}/summary"
         detail_resp = requests.get(detail_url, headers=headers)
         if "application/json" not in detail_resp.headers.get("content-type", ""):
@@ -75,13 +86,19 @@ def hybrid_check(indicator, ind_type):
             threat_score = detail.get("threat_score")
             vx_family    = detail.get("vx_family") or ""
             family       = [vx_family] if vx_family else []
+            first_seen   = detail.get("analysis_start_time")
+            size         = detail.get("size")
+            av_detect    = detail.get("av_detect")
 
     result = {
         "threat_score": threat_score,
         "verdict":      report.get("verdict"),
         "type":         report.get("environment_description"),
         "family":       family,
+        "first_seen":   first_seen,
+        "size":         size,
+        "av_detect":    av_detect,
     }
 
-    cache_set(indicator, "hybrid", result)
+    cache_set(indicator, "hybrid", result, user_id)
     return result

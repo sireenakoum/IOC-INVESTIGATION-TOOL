@@ -2,5 +2,11 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 fastapi>=0.111.0
 uvicorn>=0.29.0
-duckduckgo_search>=6.0.0
-googlesearch-python>=1.2.3
+ddgs>=6.0.0
+trafilatura>=1.8.0
+slowapi
+passlib[bcrypt]
+bcrypt==3.2.2
+python-jose[cryptography]
+sib-api-v3-sdk
+python-docx>=1.1.0

@@ -1,7 +1,8 @@
 import os
 import requests
 from dotenv import load_dotenv
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, LOCAL_USER_ID
+from .enrichment import add_known_entity
 
 load_dotenv()
 THREATFOX_API_KEY = os.getenv("URLHAUS_API_KEY")
@@ -11,11 +12,11 @@ BASE_URL = "https://threatfox-api.abuse.ch/api/v1/"
 _THREAT_PRIORITY = ["botnet_cc", "payload_delivery", "payload", "cc_skimming"]
 
 
-def threatfox_check(indicator, ind_type):
+def threatfox_check(indicator, ind_type, user_id=LOCAL_USER_ID):
     if ind_type not in ("ip", "domain", "url", "hash"):
         return None
 
-    cached = cache_get(indicator, "threatfox")
+    cached = cache_get(indicator, "threatfox", user_id)
     if cached:
         return cached
 
@@ -34,7 +35,11 @@ def threatfox_check(indicator, ind_type):
         print(f"  [ThreatFox] Error {response.status_code}: {response.text[:200]}")
         return None
 
-    body = response.json()
+    try:
+        body = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print("  [ThreatFox] Empty or invalid response body, skipping")
+        return None
 
     query_status = body.get("query_status")
     if query_status != "ok":
@@ -97,5 +102,11 @@ def threatfox_check(indicator, ind_type):
         "iocs":             iocs,
     }
 
-    cache_set(indicator, "threatfox", result)
+    try:
+        if malware:
+            add_known_entity(malware, "malware", source="threatfox")
+    except Exception:
+        pass
+
+    cache_set(indicator, "threatfox", result, user_id)
     return result

@@ -1,44 +1,35 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
-
-const VERDICT_COLOR = {
-  high:        '#ffb4ab',
-  medium_risk: '#f97316',
-  low_risk:    '#eab308',
-  suspicious:  '#f59e0b',
-  clean:       '#4edea3',
-  no_data:     '#3c4a42',
-}
+import { VERDICT_COLOR } from '../utils/verdictColors'
 
 const VERDICT_LABEL = {
-  high:        'Malicious',
-  medium_risk: 'High Risk',
+  high:        'High Risk',
+  medium_risk: 'Medium Risk',
   low_risk:    'Low Risk',
   suspicious:  'Suspicious',
   clean:       'Clean',
   no_data:     'Unknown',
 }
 
-export default function RightPanel({ history }) {
+export default function RightPanel({ history, verdictCounts = {}, width = 300 }) {
   const last5          = history.slice(0, 5)
   const highRiskCount  = last5.filter(r => ['high', 'medium_risk'].includes(r.verdict)).length
   const threatLevel    = highRiskCount >= 3 ? 'High' : highRiskCount >= 1 ? 'Medium' : 'Low'
-  const threatColor    = threatLevel === 'High' ? '#ffb4ab' : threatLevel === 'Medium' ? '#ffb95f' : '#4edea3'
+  const threatColor    = threatLevel === 'High' ? VERDICT_COLOR.high : threatLevel === 'Medium' ? VERDICT_COLOR.medium_risk : VERDICT_COLOR.clean
   const barPct         = threatLevel === 'High' ? 85 : threatLevel === 'Medium' ? 50 : 15
 
-  const counts = {}
-  history.forEach(r => {
-    const v = r.verdict || 'no_data'
-    counts[v] = (counts[v] || 0) + 1
-  })
-  const donutData = Object.entries(counts).map(([v, n]) => ({
+  // verdictCounts is aggregated server-side over the user's FULL history
+  // (see /api/history's verdict_counts), not just whatever page of rows
+  // happens to be loaded client-side — so every category present shows up
+  // with its true total, independent of ledger pagination.
+  const donutData = Object.entries(verdictCounts).map(([v, n]) => ({
     name:  VERDICT_LABEL[v] || v,
     value: n,
     color: VERDICT_COLOR[v] || '#3c4a42',
   }))
 
   return (
-    <aside className="fixed right-0 top-0 h-full w-[300px] flex flex-col overflow-y-auto z-10"
-           style={{ background: 'rgba(27,27,31,0.6)', backdropFilter: 'blur(12px)',
+    <aside className="fixed right-0 top-0 h-full flex flex-col overflow-y-auto z-10"
+           style={{ width, background: 'rgba(27,27,31,0.6)', backdropFilter: 'blur(12px)',
                     borderLeft: '1px solid #3c4a42' }}>
 
       {/* Header */}
@@ -68,7 +59,7 @@ export default function RightPanel({ history }) {
           </div>
           <div className="relative mt-1.5 mb-1.5">
             <div className="h-1.5 rounded-full"
-                 style={{ background: 'linear-gradient(to right, #4edea3, #ffb95f, #ffb4ab)' }} />
+                 style={{ background: `linear-gradient(to right, ${VERDICT_COLOR.clean}, ${VERDICT_COLOR.medium_risk}, ${VERDICT_COLOR.high})` }} />
             <div className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full"
                  style={{ left: `${barPct}%`, transform: 'translate(-50%, -50%)',
                           background: 'white', border: `2.5px solid ${threatColor}`,
